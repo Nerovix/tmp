@@ -1168,6 +1168,12 @@ static void handle___kvm_clear_el2_trap_count(struct kvm_cpu_context *host_ctxt)
 	cpu_reg(host_ctxt, 1) = 0;
 }
 
+static void handle___pkvm_view_stage2_pt(struct kvm_cpu_context *host_ctxt)
+{
+	// todo
+	cpu_reg(host_ctxt, 1) = 114514;
+}
+
 typedef void (*hcall_t)(struct kvm_cpu_context *);
 
 #define HANDLE_FUNC(x)	[__KVM_HOST_SMCCC_FUNC_##x] = (hcall_t)handle_##x
@@ -1218,6 +1224,8 @@ static const hcall_t host_hcall[] = {
 	HANDLE_FUNC(__pkvm_iommu_rk_disable),
 	HANDLE_FUNC(__kvm_get_el2_trap_count),
 	HANDLE_FUNC(__kvm_clear_el2_trap_count),
+
+	HANDLE_FUNC(__pkvm_view_stage2_pt),//43
 };
 
 static inline u64 kernel__text_addr(void)

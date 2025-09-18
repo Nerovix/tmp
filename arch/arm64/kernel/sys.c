@@ -24,7 +24,7 @@ SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
 {
 	if (offset_in_page(off) != 0)
 		return -EINVAL;
-
+	
 	return ksys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
 }
 
@@ -34,6 +34,12 @@ SYSCALL_DEFINE1(arm64_personality, unsigned int, personality)
 		!system_supports_32bit_el0())
 		return -EINVAL;
 	return ksys_personality(personality);
+}
+
+SYSCALL_DEFINE1(view_stage2_pt,unsigned int,id)
+{
+	int fib[10]={1,1,2,3,5,8,13,21,34,55};
+	return sys_ni_syscall(fib[id]);
 }
 
 asmlinkage long sys_ni_syscall(void);
