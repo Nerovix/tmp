@@ -39,7 +39,7 @@ SYSCALL_DEFINE1(arm64_personality, unsigned int, personality)
 SYSCALL_DEFINE1(view_stage2_pt,unsigned int,id)
 {
 	int fib[10]={1,1,2,3,5,8,13,21,34,55};
-	return sys_ni_syscall(fib[id]);
+	return fib[id];
 }
 
 asmlinkage long sys_ni_syscall(void);
