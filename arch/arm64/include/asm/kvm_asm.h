@@ -96,6 +96,7 @@ enum __kvm_host_smccc_func {
 	__KVM_HOST_SMCCC_FUNC___pkvm_iommu_rk_disable,
 	__KVM_HOST_SMCCC_FUNC___kvm_get_el2_trap_count,
 	__KVM_HOST_SMCCC_FUNC___kvm_clear_el2_trap_count,
+	__KVM_HOST_SMCCC_FUNC___pkvm_view_stage2_pt,
 };
 
 #define DECLARE_KVM_VHE_SYM(sym)	extern char sym[]

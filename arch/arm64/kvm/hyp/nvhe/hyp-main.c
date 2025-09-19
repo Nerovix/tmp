@@ -1170,8 +1170,9 @@ static void handle___kvm_clear_el2_trap_count(struct kvm_cpu_context *host_ctxt)
 
 static void handle___pkvm_view_stage2_pt(struct kvm_cpu_context *host_ctxt)
 {
-	// todo
-	cpu_reg(host_ctxt, 1) = 114514;
+	unsigned int fib[13]={1,1,4,5,1,4,1,9,1,9,8,1,0};
+	DECLARE_REG(unsigned int, id, host_ctxt, 1);
+	cpu_reg(host_ctxt, 1) = fib[id];
 }
 
 typedef void (*hcall_t)(struct kvm_cpu_context *);

@@ -18,6 +18,9 @@
 #include <asm/cpufeature.h>
 #include <asm/syscall.h>
 
+#include <linux/arm-smccc.h>
+#include <kvm/arm_hypercalls.h>
+
 SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
 		unsigned long, prot, unsigned long, flags,
 		unsigned long, fd, unsigned long, off)
@@ -38,8 +41,16 @@ SYSCALL_DEFINE1(arm64_personality, unsigned int, personality)
 
 SYSCALL_DEFINE1(view_stage2_pt,unsigned int,id)
 {
-	int fib[10]={1,1,2,3,5,8,13,21,34,55};
-	return fib[id];
+	struct arm_smccc_res res;
+    if (id > 12)
+        return EINVAL;
+    arm_smccc_hvc(KVM_HOST_SMCCC_ID(__KVM_HOST_SMCCC_FUNC___pkvm_view_stage2_pt),
+              id, 0, 0, 0, 0, 0, 0, &res);
+
+    if ((long)res.a0 != SMCCC_RET_SUCCESS)
+        return 114514;
+
+    return res.a1;
 }
 
 asmlinkage long sys_ni_syscall(void);
