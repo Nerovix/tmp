@@ -1,0 +1,45 @@
+arch/arm64/kvm/hyp/nvhe/ffa.c:214:	ret = hyp_pin_shared_mem(tx_virt, tx_virt + 1);
+arch/arm64/kvm/hyp/nvhe/ffa.c:221:	ret = hyp_pin_shared_mem(rx_virt, rx_virt + 1);
+arch/arm64/kvm/hyp/nvhe/ffa.c:237:	hyp_unpin_shared_mem(tx_virt, tx_virt + 1);
+arch/arm64/kvm/hyp/nvhe/ffa.c:264:	hyp_unpin_shared_mem(host_kvm.ffa.tx, host_kvm.ffa.tx + 1);
+arch/arm64/kvm/hyp/nvhe/ffa.c:268:	hyp_unpin_shared_mem(host_kvm.ffa.rx, host_kvm.ffa.rx + 1);
+arch/arm64/kvm/hyp/nvhe/ffa.c:280:static u32 __ffa_host_share_ranges(struct ffa_mem_region_addr_range *ranges,
+arch/arm64/kvm/hyp/nvhe/ffa.c:300:static u32 __ffa_host_unshare_ranges(struct ffa_mem_region_addr_range *ranges,
+arch/arm64/kvm/hyp/nvhe/ffa.c:320:static int ffa_host_share_ranges(struct ffa_mem_region_addr_range *ranges,
+arch/arm64/kvm/hyp/nvhe/ffa.c:323:	u32 nshared = __ffa_host_share_ranges(ranges, nranges);
+arch/arm64/kvm/hyp/nvhe/ffa.c:326:	if (nshared != nranges) {
+arch/arm64/kvm/hyp/nvhe/ffa.c:334:static int ffa_host_unshare_ranges(struct ffa_mem_region_addr_range *ranges,
+arch/arm64/kvm/hyp/nvhe/ffa.c:337:	u32 nunshared = __ffa_host_unshare_ranges(ranges, nranges);
+arch/arm64/kvm/hyp/nvhe/ffa.c:340:	if (nunshared != nranges) {
+arch/arm64/kvm/hyp/nvhe/hyp-main.c:1294:	if (ret = hyp_pin_shared_mem(pool, pool + cap * 4)) {
+arch/arm64/kvm/hyp/nvhe/hyp-main.c:1325:	hyp_unpin_shared_mem(pool, pool + cap * 4);
+arch/arm64/kvm/hyp/nvhe/iommu.c:249: * arguments are passed in a shared memory buffer. The driver is expected to
+arch/arm64/kvm/hyp/nvhe/iommu.c:283:		ret = hyp_pin_shared_mem(data, data + size);
+arch/arm64/kvm/hyp/nvhe/iommu.c:286:			hyp_unpin_shared_mem(data, data + size);
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:907:static int host_ack_share(u64 addr, const struct pkvm_mem_transition *tx,
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:921:static int host_ack_unshare(u64 addr, const struct pkvm_mem_transition *tx)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:926:static int host_complete_share(u64 addr, const struct pkvm_mem_transition *tx,
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:934:static int host_complete_unshare(u64 addr, const struct pkvm_mem_transition *tx)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1045:static int hyp_ack_share(u64 addr, const struct pkvm_mem_transition *tx,
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1059:static int hyp_ack_unshare(u64 addr, const struct pkvm_mem_transition *tx)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1083:static int hyp_complete_share(u64 addr, const struct pkvm_mem_transition *tx,
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1093:static int hyp_complete_unshare(u64 addr, const struct pkvm_mem_transition *tx)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1131:static int guest_ack_share(u64 addr, const struct pkvm_mem_transition *tx,
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1143:static int guest_ack_unshare(u64 addr, const struct pkvm_mem_transition *tx)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1159:static int guest_complete_share(u64 addr, const struct pkvm_mem_transition *tx,
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1172:static int guest_complete_unshare(u64 addr, const struct pkvm_mem_transition *tx)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1320:static int check_share(struct pkvm_mem_share *share)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1367:static int __do_share(struct pkvm_mem_share *share)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1423:static int do_share(struct pkvm_mem_share *share)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1434:static int check_unshare(struct pkvm_mem_share *share)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1478:static int __do_unshare(struct pkvm_mem_share *share)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1531:static int do_unshare(struct pkvm_mem_share *share)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1904:int hyp_pin_shared_mem(void *from, void *to)
+arch/arm64/kvm/hyp/nvhe/mem_protect.c:1934:void hyp_unpin_shared_mem(void *from, void *to)
+arch/arm64/kvm/hyp/nvhe/pkvm.c:380:	hyp_unpin_shared_mem(host_vcpu, host_vcpu + 1);
+arch/arm64/kvm/hyp/nvhe/pkvm.c:387:	hyp_unpin_shared_mem(sve_state, sve_state + sve_state_size);
+arch/arm64/kvm/hyp/nvhe/pkvm.c:424:	if (hyp_pin_shared_mem(host_vcpu, host_vcpu + 1))
+arch/arm64/kvm/hyp/nvhe/pkvm.c:461:		    hyp_pin_shared_mem(sve_state, sve_state + sve_state_size)) {
+arch/arm64/kvm/hyp/nvhe/pkvm.c:679:	ret = hyp_pin_shared_mem(kvm, kvm + 1);
+arch/arm64/kvm/hyp/nvhe/pkvm.c:729:	hyp_unpin_shared_mem(kvm, kvm + 1);
+arch/arm64/kvm/hyp/nvhe/pkvm.c:866:	hyp_unpin_shared_mem(host_kvm, host_kvm + 1);

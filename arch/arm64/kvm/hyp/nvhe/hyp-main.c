@@ -25,12 +25,15 @@
 #include <linux/irqchip/arm-gic-v3.h>
 #include <uapi/linux/psci.h>
 
+#include <nvhe/mem_protect.h>
+#include <asm/kvm_pgtable.h>
+
 #include "../../sys_regs.h"
 
 struct pkvm_loaded_state {
 	/* loaded vcpu is HYP VA */
-	struct kvm_vcpu			*vcpu;
-	bool				is_protected;
+	struct kvm_vcpu *vcpu;
+	bool is_protected;
 
 	/*
 	 * Host FPSIMD state. Written to when the guest accesses its
@@ -40,7 +43,7 @@ struct pkvm_loaded_state {
 	 * Only valid when the KVM_ARM64_FP_ENABLED flag is set in the
 	 * shadow structure.
 	 */
-	struct user_fpsimd_state	host_fpsimd_state;
+	struct user_fpsimd_state host_fpsimd_state;
 };
 
 static DEFINE_PER_CPU(struct pkvm_loaded_state, loaded_state);
@@ -49,11 +52,14 @@ DEFINE_PER_CPU(struct kvm_nvhe_init_params, kvm_init_params);
 
 void __kvm_hyp_host_forward_smc(struct kvm_cpu_context *host_ctxt);
 
-typedef void (*shadow_entry_exit_handler_fn)(struct kvm_vcpu *, struct kvm_vcpu *);
+typedef void (*shadow_entry_exit_handler_fn)(struct kvm_vcpu *,
+					     struct kvm_vcpu *);
 
-static void handle_pvm_entry_wfx(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_pvm_entry_wfx(struct kvm_vcpu *host_vcpu,
+				 struct kvm_vcpu *shadow_vcpu)
 {
-	shadow_vcpu->arch.flags |= host_vcpu->arch.flags & KVM_ARM64_INCREMENT_PC;
+	shadow_vcpu->arch.flags |=
+		host_vcpu->arch.flags & KVM_ARM64_INCREMENT_PC;
 }
 
 static int pkvm_refill_memcache(struct kvm_vcpu *shadow_vcpu,
@@ -61,12 +67,14 @@ static int pkvm_refill_memcache(struct kvm_vcpu *shadow_vcpu,
 {
 	u64 nr_pages;
 
-	nr_pages = VTCR_EL2_LVLS(shadow_vcpu->arch.pkvm.shadow_vm->arch.vtcr) - 1;
+	nr_pages =
+		VTCR_EL2_LVLS(shadow_vcpu->arch.pkvm.shadow_vm->arch.vtcr) - 1;
 	return refill_memcache(&shadow_vcpu->arch.pkvm_memcache, nr_pages,
 			       &host_vcpu->arch.pkvm_memcache);
 }
 
-static void handle_pvm_entry_psci(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_pvm_entry_psci(struct kvm_vcpu *host_vcpu,
+				  struct kvm_vcpu *shadow_vcpu)
 {
 	u32 psci_fn = smccc_get_function(shadow_vcpu);
 	u64 ret = vcpu_get_reg(host_vcpu, 0);
@@ -82,12 +90,15 @@ static void handle_pvm_entry_psci(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *s
 		 * off.
 		 */
 		if (ret != PSCI_RET_SUCCESS) {
-			struct kvm_shadow_vm *vm = shadow_vcpu->arch.pkvm.shadow_vm;
+			struct kvm_shadow_vm *vm =
+				shadow_vcpu->arch.pkvm.shadow_vm;
 			unsigned long cpu_id = smccc_get_arg1(shadow_vcpu);
 			struct kvm_vcpu *vcpu = pvm_mpidr_to_vcpu(vm, cpu_id);
 
-			if (vcpu && READ_ONCE(vcpu->arch.pkvm.power_state) == PSCI_0_2_AFFINITY_LEVEL_ON_PENDING)
-				WRITE_ONCE(vcpu->arch.pkvm.power_state, PSCI_0_2_AFFINITY_LEVEL_OFF);
+			if (vcpu && READ_ONCE(vcpu->arch.pkvm.power_state) ==
+					    PSCI_0_2_AFFINITY_LEVEL_ON_PENDING)
+				WRITE_ONCE(vcpu->arch.pkvm.power_state,
+					   PSCI_0_2_AFFINITY_LEVEL_OFF);
 
 			ret = PSCI_RET_INTERNAL_FAILURE;
 		}
@@ -99,7 +110,8 @@ static void handle_pvm_entry_psci(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *s
 	vcpu_set_reg(shadow_vcpu, 0, ret);
 }
 
-static void handle_pvm_entry_hvc64(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_pvm_entry_hvc64(struct kvm_vcpu *host_vcpu,
+				   struct kvm_vcpu *shadow_vcpu)
 {
 	u32 fn = smccc_get_function(shadow_vcpu);
 
@@ -118,7 +130,8 @@ static void handle_pvm_entry_hvc64(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *
 	}
 }
 
-static void handle_pvm_entry_sys64(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_pvm_entry_sys64(struct kvm_vcpu *host_vcpu,
+				   struct kvm_vcpu *shadow_vcpu)
 {
 	unsigned long host_flags;
 
@@ -130,8 +143,8 @@ static void handle_pvm_entry_sys64(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *
 		u32 esr = (ESR_ELx_EC_UNKNOWN << ESR_ELx_EC_SHIFT);
 
 		__vcpu_sys_reg(shadow_vcpu, ESR_EL1) = esr;
-		shadow_vcpu->arch.flags &= ~(KVM_ARM64_PENDING_EXCEPTION |
-					     KVM_ARM64_EXCEPT_MASK);
+		shadow_vcpu->arch.flags &=
+			~(KVM_ARM64_PENDING_EXCEPTION | KVM_ARM64_EXCEPT_MASK);
 		shadow_vcpu->arch.flags |= (KVM_ARM64_PENDING_EXCEPTION |
 					    KVM_ARM64_EXCEPT_AA64_ELx_SYNC |
 					    KVM_ARM64_EXCEPT_AA64_EL1);
@@ -139,10 +152,9 @@ static void handle_pvm_entry_sys64(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *
 		return;
 	}
 
-
 	if (host_flags & KVM_ARM64_INCREMENT_PC) {
-		shadow_vcpu->arch.flags &= ~(KVM_ARM64_PENDING_EXCEPTION |
-					     KVM_ARM64_EXCEPT_MASK);
+		shadow_vcpu->arch.flags &=
+			~(KVM_ARM64_PENDING_EXCEPTION | KVM_ARM64_EXCEPT_MASK);
 		shadow_vcpu->arch.flags |= KVM_ARM64_INCREMENT_PC;
 	}
 
@@ -155,7 +167,8 @@ static void handle_pvm_entry_sys64(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *
 	}
 }
 
-static void handle_pvm_entry_iabt(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_pvm_entry_iabt(struct kvm_vcpu *host_vcpu,
+				  struct kvm_vcpu *shadow_vcpu)
 {
 	unsigned long cpsr = *vcpu_cpsr(shadow_vcpu);
 	unsigned long host_flags;
@@ -181,14 +194,15 @@ static void handle_pvm_entry_iabt(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *s
 	__vcpu_sys_reg(shadow_vcpu, FAR_EL1) = kvm_vcpu_get_hfar(shadow_vcpu);
 
 	/* Tell the run loop that we want to inject something */
-	shadow_vcpu->arch.flags &= ~(KVM_ARM64_PENDING_EXCEPTION |
-				     KVM_ARM64_EXCEPT_MASK);
-	shadow_vcpu->arch.flags |= (KVM_ARM64_PENDING_EXCEPTION |
-				    KVM_ARM64_EXCEPT_AA64_ELx_SYNC |
-				    KVM_ARM64_EXCEPT_AA64_EL1);
+	shadow_vcpu->arch.flags &=
+		~(KVM_ARM64_PENDING_EXCEPTION | KVM_ARM64_EXCEPT_MASK);
+	shadow_vcpu->arch.flags |=
+		(KVM_ARM64_PENDING_EXCEPTION | KVM_ARM64_EXCEPT_AA64_ELx_SYNC |
+		 KVM_ARM64_EXCEPT_AA64_EL1);
 }
 
-static void handle_pvm_entry_dabt(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_pvm_entry_dabt(struct kvm_vcpu *host_vcpu,
+				  struct kvm_vcpu *shadow_vcpu)
 {
 	unsigned long host_flags;
 	bool rd_update;
@@ -208,10 +222,11 @@ static void handle_pvm_entry_dabt(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *s
 		esr |= ESR_ELx_FSC_EXTABT;
 
 		__vcpu_sys_reg(shadow_vcpu, ESR_EL1) = esr;
-		__vcpu_sys_reg(shadow_vcpu, FAR_EL1) = kvm_vcpu_get_hfar(shadow_vcpu);
+		__vcpu_sys_reg(shadow_vcpu, FAR_EL1) =
+			kvm_vcpu_get_hfar(shadow_vcpu);
 		/* Tell the run loop that we want to inject something */
-		shadow_vcpu->arch.flags &= ~(KVM_ARM64_PENDING_EXCEPTION |
-					     KVM_ARM64_EXCEPT_MASK);
+		shadow_vcpu->arch.flags &=
+			~(KVM_ARM64_PENDING_EXCEPTION | KVM_ARM64_EXCEPT_MASK);
 		shadow_vcpu->arch.flags |= (KVM_ARM64_PENDING_EXCEPTION |
 					    KVM_ARM64_EXCEPT_AA64_ELx_SYNC |
 					    KVM_ARM64_EXCEPT_AA64_EL1);
@@ -223,8 +238,8 @@ static void handle_pvm_entry_dabt(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *s
 
 	/* Handle PC increment on MMIO */
 	if ((host_flags & KVM_ARM64_INCREMENT_PC) && shadow_vcpu->mmio_needed) {
-		shadow_vcpu->arch.flags &= ~(KVM_ARM64_PENDING_EXCEPTION |
-					     KVM_ARM64_EXCEPT_MASK);
+		shadow_vcpu->arch.flags &=
+			~(KVM_ARM64_PENDING_EXCEPTION | KVM_ARM64_EXCEPT_MASK);
 		shadow_vcpu->arch.flags |= KVM_ARM64_INCREMENT_PC;
 	}
 
@@ -244,14 +259,16 @@ static void handle_pvm_entry_dabt(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *s
 	shadow_vcpu->mmio_needed = false;
 }
 
-static void handle_pvm_exit_wfx(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_pvm_exit_wfx(struct kvm_vcpu *host_vcpu,
+				struct kvm_vcpu *shadow_vcpu)
 {
-	host_vcpu->arch.ctxt.regs.pstate = shadow_vcpu->arch.ctxt.regs.pstate &
-		PSR_MODE_MASK;
+	host_vcpu->arch.ctxt.regs.pstate =
+		shadow_vcpu->arch.ctxt.regs.pstate & PSR_MODE_MASK;
 	host_vcpu->arch.fault.esr_el2 = shadow_vcpu->arch.fault.esr_el2;
 }
 
-static void handle_pvm_exit_sys64(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_pvm_exit_sys64(struct kvm_vcpu *host_vcpu,
+				  struct kvm_vcpu *shadow_vcpu)
 {
 	u32 esr_el2 = shadow_vcpu->arch.fault.esr_el2;
 
@@ -271,7 +288,8 @@ static void handle_pvm_exit_sys64(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *s
 	}
 }
 
-static void handle_pvm_exit_hvc64(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_pvm_exit_hvc64(struct kvm_vcpu *host_vcpu,
+				  struct kvm_vcpu *shadow_vcpu)
 {
 	int n, i;
 
@@ -321,7 +339,8 @@ static void handle_pvm_exit_hvc64(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *s
 		vcpu_set_reg(host_vcpu, i, vcpu_get_reg(shadow_vcpu, i));
 }
 
-static void handle_pvm_exit_iabt(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_pvm_exit_iabt(struct kvm_vcpu *host_vcpu,
+				 struct kvm_vcpu *shadow_vcpu)
 {
 	WRITE_ONCE(host_vcpu->arch.fault.esr_el2,
 		   shadow_vcpu->arch.fault.esr_el2);
@@ -329,7 +348,8 @@ static void handle_pvm_exit_iabt(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *sh
 		   shadow_vcpu->arch.fault.hpfar_el2);
 }
 
-static void handle_pvm_exit_dabt(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_pvm_exit_dabt(struct kvm_vcpu *host_vcpu,
+				 struct kvm_vcpu *shadow_vcpu)
 {
 	shadow_vcpu->mmio_needed = __pkvm_check_ioguard_page(shadow_vcpu);
 
@@ -352,11 +372,12 @@ static void handle_pvm_exit_dabt(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *sh
 	WRITE_ONCE(host_vcpu->arch.ctxt.regs.pstate,
 		   shadow_vcpu->arch.ctxt.regs.pstate & PSR_MODE_MASK);
 	WRITE_ONCE(__vcpu_sys_reg(host_vcpu, SCTLR_EL1),
-		   __vcpu_sys_reg(shadow_vcpu, SCTLR_EL1) & (SCTLR_ELx_EE | SCTLR_EL1_E0E));
+		   __vcpu_sys_reg(shadow_vcpu, SCTLR_EL1) &
+			   (SCTLR_ELx_EE | SCTLR_EL1_E0E));
 
 	/* TODO: Do not hardcode RKNPU MMIO regions. */
-	if (shadow_vcpu->arch.fault.hpfar_el2 >= (0xf0000000 >> 8) && 
-		shadow_vcpu->arch.fault.hpfar_el2 < (0xf0004000 >> 8)) {
+	if (shadow_vcpu->arch.fault.hpfar_el2 >= (0xf0000000 >> 8) &&
+	    shadow_vcpu->arch.fault.hpfar_el2 < (0xf0004000 >> 8)) {
 		/* 
 		 * We can allow below to fail. The hypervisor might 
 		 * already own the regions. And the hypervisor will
@@ -364,22 +385,25 @@ static void handle_pvm_exit_dabt(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *sh
 		 * has the access.
 		 */
 		__pkvm_host_donate_hyp(0xfdab0000 >> PAGE_SHIFT, 4);
-		__pkvm_hyp_share_guest(0xfdab0000 >> PAGE_SHIFT, 0xf0000000 >> PAGE_SHIFT, 4, shadow_vcpu);
+		__pkvm_hyp_share_guest(0xfdab0000 >> PAGE_SHIFT,
+				       0xf0000000 >> PAGE_SHIFT, 4,
+				       shadow_vcpu);
 	} else {
 		/* Let EL1 DABT exit handler do its thing. */
 		WRITE_ONCE(host_vcpu->arch.fault.far_el2,
-		   shadow_vcpu->arch.fault.far_el2 & FAR_MASK);
+			   shadow_vcpu->arch.fault.far_el2 & FAR_MASK);
 		WRITE_ONCE(host_vcpu->arch.fault.hpfar_el2,
-			shadow_vcpu->arch.fault.hpfar_el2);
+			   shadow_vcpu->arch.fault.hpfar_el2);
 	}
 }
 
-static void handle_vm_entry_generic(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_vm_entry_generic(struct kvm_vcpu *host_vcpu,
+				    struct kvm_vcpu *shadow_vcpu)
 {
 	unsigned long host_flags = READ_ONCE(host_vcpu->arch.flags);
 
-	shadow_vcpu->arch.flags &= ~(KVM_ARM64_PENDING_EXCEPTION |
-				     KVM_ARM64_EXCEPT_MASK);
+	shadow_vcpu->arch.flags &=
+		~(KVM_ARM64_PENDING_EXCEPTION | KVM_ARM64_EXCEPT_MASK);
 
 	if (host_flags & KVM_ARM64_PENDING_EXCEPTION) {
 		shadow_vcpu->arch.flags |= KVM_ARM64_PENDING_EXCEPTION;
@@ -389,42 +413,44 @@ static void handle_vm_entry_generic(struct kvm_vcpu *host_vcpu, struct kvm_vcpu 
 	}
 }
 
-static void handle_vm_exit_generic(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_vm_exit_generic(struct kvm_vcpu *host_vcpu,
+				   struct kvm_vcpu *shadow_vcpu)
 {
 	host_vcpu->arch.fault.esr_el2 = shadow_vcpu->arch.fault.esr_el2;
 }
 
-static void handle_vm_exit_abt(struct kvm_vcpu *host_vcpu, struct kvm_vcpu *shadow_vcpu)
+static void handle_vm_exit_abt(struct kvm_vcpu *host_vcpu,
+			       struct kvm_vcpu *shadow_vcpu)
 {
 	host_vcpu->arch.fault = shadow_vcpu->arch.fault;
 }
 
 static const shadow_entry_exit_handler_fn entry_pvm_shadow_handlers[] = {
-	[0 ... ESR_ELx_EC_MAX]		= NULL,
-	[ESR_ELx_EC_WFx]		= handle_pvm_entry_wfx,
-	[ESR_ELx_EC_HVC64]		= handle_pvm_entry_hvc64,
-	[ESR_ELx_EC_SYS64]		= handle_pvm_entry_sys64,
-	[ESR_ELx_EC_IABT_LOW]		= handle_pvm_entry_iabt,
-	[ESR_ELx_EC_DABT_LOW]		= handle_pvm_entry_dabt,
+	[0 ... ESR_ELx_EC_MAX] = NULL,
+	[ESR_ELx_EC_WFx] = handle_pvm_entry_wfx,
+	[ESR_ELx_EC_HVC64] = handle_pvm_entry_hvc64,
+	[ESR_ELx_EC_SYS64] = handle_pvm_entry_sys64,
+	[ESR_ELx_EC_IABT_LOW] = handle_pvm_entry_iabt,
+	[ESR_ELx_EC_DABT_LOW] = handle_pvm_entry_dabt,
 };
 
 static const shadow_entry_exit_handler_fn exit_pvm_shadow_handlers[] = {
-	[0 ... ESR_ELx_EC_MAX]		= NULL,
-	[ESR_ELx_EC_WFx]		= handle_pvm_exit_wfx,
-	[ESR_ELx_EC_HVC64]		= handle_pvm_exit_hvc64,
-	[ESR_ELx_EC_SYS64]		= handle_pvm_exit_sys64,
-	[ESR_ELx_EC_IABT_LOW]		= handle_pvm_exit_iabt,
-	[ESR_ELx_EC_DABT_LOW]		= handle_pvm_exit_dabt,
+	[0 ... ESR_ELx_EC_MAX] = NULL,
+	[ESR_ELx_EC_WFx] = handle_pvm_exit_wfx,
+	[ESR_ELx_EC_HVC64] = handle_pvm_exit_hvc64,
+	[ESR_ELx_EC_SYS64] = handle_pvm_exit_sys64,
+	[ESR_ELx_EC_IABT_LOW] = handle_pvm_exit_iabt,
+	[ESR_ELx_EC_DABT_LOW] = handle_pvm_exit_dabt,
 };
 
 static const shadow_entry_exit_handler_fn entry_vm_shadow_handlers[] = {
-	[0 ... ESR_ELx_EC_MAX]		= handle_vm_entry_generic,
+	[0 ... ESR_ELx_EC_MAX] = handle_vm_entry_generic,
 };
 
 static const shadow_entry_exit_handler_fn exit_vm_shadow_handlers[] = {
-	[0 ... ESR_ELx_EC_MAX]		= handle_vm_exit_generic,
-	[ESR_ELx_EC_IABT_LOW]		= handle_vm_exit_abt,
-	[ESR_ELx_EC_DABT_LOW]		= handle_vm_exit_abt,
+	[0 ... ESR_ELx_EC_MAX] = handle_vm_exit_generic,
+	[ESR_ELx_EC_IABT_LOW] = handle_vm_exit_abt,
+	[ESR_ELx_EC_DABT_LOW] = handle_vm_exit_abt,
 };
 
 static void flush_vgic_state(struct kvm_vcpu *host_vcpu,
@@ -433,19 +459,18 @@ static void flush_vgic_state(struct kvm_vcpu *host_vcpu,
 	struct vgic_v3_cpu_if *host_cpu_if, *shadow_cpu_if;
 	unsigned int used_lrs, max_lrs, i;
 
-	host_cpu_if	= &host_vcpu->arch.vgic_cpu.vgic_v3;
-	shadow_cpu_if	= &shadow_vcpu->arch.vgic_cpu.vgic_v3;
+	host_cpu_if = &host_vcpu->arch.vgic_cpu.vgic_v3;
+	shadow_cpu_if = &shadow_vcpu->arch.vgic_cpu.vgic_v3;
 
 	max_lrs = (read_gicreg(ICH_VTR_EL2) & 0xf) + 1;
 	used_lrs = READ_ONCE(host_cpu_if->used_lrs);
 	used_lrs = min(used_lrs, max_lrs);
 
-	shadow_cpu_if->vgic_hcr	= host_cpu_if->vgic_hcr;
+	shadow_cpu_if->vgic_hcr = host_cpu_if->vgic_hcr;
 	/* Should be a one-off */
-	shadow_cpu_if->vgic_sre = (ICC_SRE_EL1_DIB |
-				   ICC_SRE_EL1_DFB |
-				   ICC_SRE_EL1_SRE);
-	shadow_cpu_if->used_lrs	= used_lrs;
+	shadow_cpu_if->vgic_sre =
+		(ICC_SRE_EL1_DIB | ICC_SRE_EL1_DFB | ICC_SRE_EL1_SRE);
+	shadow_cpu_if->used_lrs = used_lrs;
 
 	for (i = 0; i < used_lrs; i++)
 		shadow_cpu_if->vgic_lr[i] = host_cpu_if->vgic_lr[i];
@@ -457,10 +482,10 @@ static void sync_vgic_state(struct kvm_vcpu *host_vcpu,
 	struct vgic_v3_cpu_if *host_cpu_if, *shadow_cpu_if;
 	unsigned int i;
 
-	host_cpu_if	= &host_vcpu->arch.vgic_cpu.vgic_v3;
-	shadow_cpu_if	= &shadow_vcpu->arch.vgic_cpu.vgic_v3;
+	host_cpu_if = &host_vcpu->arch.vgic_cpu.vgic_v3;
+	shadow_cpu_if = &shadow_vcpu->arch.vgic_cpu.vgic_v3;
 
-	host_cpu_if->vgic_hcr	= shadow_cpu_if->vgic_hcr;
+	host_cpu_if->vgic_hcr = shadow_cpu_if->vgic_hcr;
 
 	for (i = 0; i < shadow_cpu_if->used_lrs; i++)
 		host_cpu_if->vgic_lr[i] = shadow_cpu_if->vgic_lr[i];
@@ -479,8 +504,10 @@ static void flush_timer_state(struct pkvm_loaded_state *state)
 	 */
 	write_sysreg(0, cntvoff_el2);
 	isb();
-	write_sysreg_el0(__vcpu_sys_reg(shadow_vcpu, CNTV_CVAL_EL0), SYS_CNTV_CVAL);
-	write_sysreg_el0(__vcpu_sys_reg(shadow_vcpu, CNTV_CTL_EL0), SYS_CNTV_CTL);
+	write_sysreg_el0(__vcpu_sys_reg(shadow_vcpu, CNTV_CVAL_EL0),
+			 SYS_CNTV_CVAL);
+	write_sysreg_el0(__vcpu_sys_reg(shadow_vcpu, CNTV_CTL_EL0),
+			 SYS_CNTV_CTL);
 }
 
 static void sync_timer_state(struct pkvm_loaded_state *state)
@@ -494,8 +521,10 @@ static void sync_timer_state(struct pkvm_loaded_state *state)
 	 * Preserve the vtimer state so that it is always correct,
 	 * even if the host tries to make a mess.
 	 */
-	__vcpu_sys_reg(shadow_vcpu, CNTV_CVAL_EL0) = read_sysreg_el0(SYS_CNTV_CVAL);
-	__vcpu_sys_reg(shadow_vcpu, CNTV_CTL_EL0) = read_sysreg_el0(SYS_CNTV_CTL);
+	__vcpu_sys_reg(shadow_vcpu, CNTV_CVAL_EL0) =
+		read_sysreg_el0(SYS_CNTV_CVAL);
+	__vcpu_sys_reg(shadow_vcpu, CNTV_CTL_EL0) =
+		read_sysreg_el0(SYS_CNTV_CTL);
 }
 
 static void __copy_vcpu_state(const struct kvm_vcpu *from_vcpu,
@@ -503,11 +532,11 @@ static void __copy_vcpu_state(const struct kvm_vcpu *from_vcpu,
 {
 	int i;
 
-	to_vcpu->arch.ctxt.regs		= from_vcpu->arch.ctxt.regs;
-	to_vcpu->arch.ctxt.spsr_abt	= from_vcpu->arch.ctxt.spsr_abt;
-	to_vcpu->arch.ctxt.spsr_und	= from_vcpu->arch.ctxt.spsr_und;
-	to_vcpu->arch.ctxt.spsr_irq	= from_vcpu->arch.ctxt.spsr_irq;
-	to_vcpu->arch.ctxt.spsr_fiq	= from_vcpu->arch.ctxt.spsr_fiq;
+	to_vcpu->arch.ctxt.regs = from_vcpu->arch.ctxt.regs;
+	to_vcpu->arch.ctxt.spsr_abt = from_vcpu->arch.ctxt.spsr_abt;
+	to_vcpu->arch.ctxt.spsr_und = from_vcpu->arch.ctxt.spsr_und;
+	to_vcpu->arch.ctxt.spsr_irq = from_vcpu->arch.ctxt.spsr_irq;
+	to_vcpu->arch.ctxt.spsr_fiq = from_vcpu->arch.ctxt.spsr_fiq;
 
 	/*
 	 * Copy the sysregs, but don't mess with the timer state which
@@ -516,7 +545,8 @@ static void __copy_vcpu_state(const struct kvm_vcpu *from_vcpu,
 	for (i = 1; i < NR_SYS_REGS; i++) {
 		if (i >= CNTVOFF_EL2 && i <= CNTP_CTL_EL0)
 			continue;
-		to_vcpu->arch.ctxt.sys_regs[i] = from_vcpu->arch.ctxt.sys_regs[i];
+		to_vcpu->arch.ctxt.sys_regs[i] =
+			from_vcpu->arch.ctxt.sys_regs[i];
 	}
 }
 
@@ -541,7 +571,8 @@ static void flush_shadow_state(struct pkvm_loaded_state *state)
 	u8 esr_ec;
 	shadow_entry_exit_handler_fn ec_handler;
 
-	if (READ_ONCE(shadow_vcpu->arch.pkvm.power_state) == PSCI_0_2_AFFINITY_LEVEL_ON_PENDING)
+	if (READ_ONCE(shadow_vcpu->arch.pkvm.power_state) ==
+	    PSCI_0_2_AFFINITY_LEVEL_ON_PENDING)
 		pkvm_reset_vcpu(shadow_vcpu);
 
 	/*
@@ -550,10 +581,12 @@ static void flush_shadow_state(struct pkvm_loaded_state *state)
 	 * the shadow.
 	 */
 	if (!state->is_protected) {
-		if (READ_ONCE(host_vcpu->arch.flags) & KVM_ARM64_PKVM_STATE_DIRTY)
+		if (READ_ONCE(host_vcpu->arch.flags) &
+		    KVM_ARM64_PKVM_STATE_DIRTY)
 			__flush_vcpu_state(shadow_vcpu);
 
-		state->vcpu->arch.hcr_el2 = HCR_GUEST_FLAGS & ~(HCR_RW | HCR_TWI | HCR_TWE);
+		state->vcpu->arch.hcr_el2 =
+			HCR_GUEST_FLAGS & ~(HCR_RW | HCR_TWI | HCR_TWE);
 		state->vcpu->arch.hcr_el2 |= host_vcpu->arch.hcr_el2;
 	}
 
@@ -618,7 +651,8 @@ static void sync_shadow_state(struct pkvm_loaded_state *state, u32 exit_reason)
 		BUG();
 	}
 
-	host_vcpu->arch.flags &= ~(KVM_ARM64_PENDING_EXCEPTION | KVM_ARM64_INCREMENT_PC);
+	host_vcpu->arch.flags &=
+		~(KVM_ARM64_PENDING_EXCEPTION | KVM_ARM64_INCREMENT_PC);
 	shadow_vcpu->arch.pkvm.exit_code = exit_reason;
 }
 
@@ -663,15 +697,16 @@ static void handle___pkvm_vcpu_load(struct kvm_cpu_context *host_ctxt)
 	if (!state->vcpu)
 		return;
 
-	state->is_protected = state->vcpu->arch.pkvm.shadow_vm->arch.pkvm.enabled;
+	state->is_protected =
+		state->vcpu->arch.pkvm.shadow_vm->arch.pkvm.enabled;
 
 	state->vcpu->arch.host_fpsimd_state = &state->host_fpsimd_state;
 	state->vcpu->arch.flags |= KVM_ARM64_FP_HOST;
 
 	if (state->is_protected) {
 		/* Propagate WFx trapping flags, trap ptrauth */
-		state->vcpu->arch.hcr_el2 &= ~(HCR_TWE | HCR_TWI |
-					       HCR_API | HCR_APK);
+		state->vcpu->arch.hcr_el2 &=
+			~(HCR_TWE | HCR_TWI | HCR_API | HCR_APK);
 		state->vcpu->arch.hcr_el2 |= hcr_el2 & (HCR_TWE | HCR_TWI);
 	}
 }
@@ -682,13 +717,15 @@ static void handle___pkvm_vcpu_put(struct kvm_cpu_context *host_ctxt)
 		struct pkvm_loaded_state *state = this_cpu_ptr(&loaded_state);
 
 		if (state->vcpu) {
-			struct kvm_vcpu *host_vcpu = state->vcpu->arch.pkvm.host_vcpu;
+			struct kvm_vcpu *host_vcpu =
+				state->vcpu->arch.pkvm.host_vcpu;
 
 			if (state->vcpu->arch.flags & KVM_ARM64_FP_ENABLED)
 				fpsimd_host_restore();
 
 			if (!state->is_protected &&
-			    !(READ_ONCE(host_vcpu->arch.flags) & KVM_ARM64_PKVM_STATE_DIRTY))
+			    !(READ_ONCE(host_vcpu->arch.flags) &
+			      KVM_ARM64_PKVM_STATE_DIRTY))
 				__sync_vcpu_state(state->vcpu);
 
 			put_shadow_vcpu(state->vcpu);
@@ -731,21 +768,20 @@ static struct kvm_vcpu *__get_current_vcpu(struct kvm_vcpu *vcpu,
 	return vcpu;
 }
 
-#define get_current_vcpu(ctxt, regnr, statepp)				\
-	({								\
-		DECLARE_REG(struct kvm_vcpu *, __vcpu, ctxt, regnr);	\
-		__get_current_vcpu(__vcpu, statepp);			\
+#define get_current_vcpu(ctxt, regnr, statepp)                                 \
+	({                                                                     \
+		DECLARE_REG(struct kvm_vcpu *, __vcpu, ctxt, regnr);           \
+		__get_current_vcpu(__vcpu, statepp);                           \
 	})
 
-#define get_current_vcpu_from_cpu_if(ctxt, regnr, statepp)		\
-	({								\
-		DECLARE_REG(struct vgic_v3_cpu_if *, cif, ctxt, regnr); \
-		struct kvm_vcpu *__vcpu;				\
-		__vcpu = container_of(cif,				\
-				      struct kvm_vcpu,			\
-				      arch.vgic_cpu.vgic_v3);		\
-									\
-		__get_current_vcpu(__vcpu, statepp);			\
+#define get_current_vcpu_from_cpu_if(ctxt, regnr, statepp)                     \
+	({                                                                     \
+		DECLARE_REG(struct vgic_v3_cpu_if *, cif, ctxt, regnr);        \
+		struct kvm_vcpu *__vcpu;                                       \
+		__vcpu = container_of(cif, struct kvm_vcpu,                    \
+				      arch.vgic_cpu.vgic_v3);                  \
+                                                                               \
+		__get_current_vcpu(__vcpu, statepp);                           \
 	})
 
 static void handle___kvm_vcpu_run(struct kvm_cpu_context *host_ctxt)
@@ -756,7 +792,7 @@ static void handle___kvm_vcpu_run(struct kvm_cpu_context *host_ctxt)
 
 	vcpu = get_current_vcpu(host_ctxt, 1, &shadow_state);
 	if (!vcpu) {
-		cpu_reg(host_ctxt, 1) =  -EINVAL;
+		cpu_reg(host_ctxt, 1) = -EINVAL;
 		return;
 	}
 
@@ -782,7 +818,7 @@ static void handle___kvm_vcpu_run(struct kvm_cpu_context *host_ctxt)
 		ret = __kvm_vcpu_run(vcpu);
 	}
 
-	cpu_reg(host_ctxt, 1) =  ret;
+	cpu_reg(host_ctxt, 1) = ret;
 }
 
 static void handle___pkvm_host_donate_guest(struct kvm_cpu_context *host_ctxt)
@@ -811,7 +847,7 @@ static void handle___pkvm_host_donate_guest(struct kvm_cpu_context *host_ctxt)
 			ret = __pkvm_host_share_guest(pfn, gfn, state->vcpu);
 	}
 out:
-	cpu_reg(host_ctxt, 1) =  ret;
+	cpu_reg(host_ctxt, 1) = ret;
 }
 
 static void handle___kvm_adjust_pc(struct kvm_cpu_context *host_ctxt)
@@ -919,7 +955,8 @@ static void handle___vgic_v3_save_vmcr_aprs(struct kvm_cpu_context *host_ctxt)
 	}
 }
 
-static void handle___vgic_v3_restore_vmcr_aprs(struct kvm_cpu_context *host_ctxt)
+static void
+handle___vgic_v3_restore_vmcr_aprs(struct kvm_cpu_context *host_ctxt)
 {
 	struct pkvm_loaded_state *shadow_state;
 	struct kvm_vcpu *vcpu;
@@ -937,9 +974,8 @@ static void handle___vgic_v3_restore_vmcr_aprs(struct kvm_cpu_context *host_ctxt
 
 		shadow_cpu_if->vgic_vmcr = cpu_if->vgic_vmcr;
 		/* Should be a one-off */
-		shadow_cpu_if->vgic_sre = (ICC_SRE_EL1_DIB |
-					   ICC_SRE_EL1_DFB |
-					   ICC_SRE_EL1_SRE);
+		shadow_cpu_if->vgic_sre =
+			(ICC_SRE_EL1_DIB | ICC_SRE_EL1_DFB | ICC_SRE_EL1_SRE);
 		for (i = 0; i < ARRAY_SIZE(cpu_if->vgic_ap0r); i++) {
 			shadow_cpu_if->vgic_ap0r[i] = cpu_if->vgic_ap0r[i];
 			shadow_cpu_if->vgic_ap1r[i] = cpu_if->vgic_ap1r[i];
@@ -964,8 +1000,8 @@ static void handle___pkvm_init(struct kvm_cpu_context *host_ctxt)
 	 * will tail-call in __pkvm_init_finalise() which will have to deal
 	 * with the host context directly.
 	 */
-	cpu_reg(host_ctxt, 1) = __pkvm_init(phys, size, nr_cpus, per_cpu_base,
-					    hyp_va_bits);
+	cpu_reg(host_ctxt, 1) =
+		__pkvm_init(phys, size, nr_cpus, per_cpu_base, hyp_va_bits);
 }
 
 static void handle___pkvm_cpu_set_vector(struct kvm_cpu_context *host_ctxt)
@@ -996,7 +1032,8 @@ static void handle___pkvm_host_reclaim_page(struct kvm_cpu_context *host_ctxt)
 	cpu_reg(host_ctxt, 1) = __pkvm_host_reclaim_page(pfn);
 }
 
-static void handle___pkvm_create_private_mapping(struct kvm_cpu_context *host_ctxt)
+static void
+handle___pkvm_create_private_mapping(struct kvm_cpu_context *host_ctxt)
 {
 	DECLARE_REG(phys_addr_t, phys, host_ctxt, 1);
 	DECLARE_REG(size_t, size, host_ctxt, 2);
@@ -1017,8 +1054,8 @@ static void handle___pkvm_init_shadow(struct kvm_cpu_context *host_ctxt)
 	DECLARE_REG(size_t, shadow_size, host_ctxt, 3);
 	DECLARE_REG(void *, pgd, host_ctxt, 4);
 
-	cpu_reg(host_ctxt, 1) = __pkvm_init_shadow(host_kvm, host_shadow_va,
-						   shadow_size, pgd);
+	cpu_reg(host_ctxt, 1) =
+		__pkvm_init_shadow(host_kvm, host_shadow_va, shadow_size, pgd);
 }
 
 static void handle___pkvm_init_shadow_vcpu(struct kvm_cpu_context *host_ctxt)
@@ -1027,9 +1064,8 @@ static void handle___pkvm_init_shadow_vcpu(struct kvm_cpu_context *host_ctxt)
 	DECLARE_REG(struct kvm_vcpu *, host_vcpu, host_ctxt, 2);
 	DECLARE_REG(void *, shadow_vcpu_hva, host_ctxt, 3);
 
-	cpu_reg(host_ctxt, 1) =	__pkvm_init_shadow_vcpu(shadow_handle,
-							host_vcpu,
-							shadow_vcpu_hva);
+	cpu_reg(host_ctxt, 1) = __pkvm_init_shadow_vcpu(
+		shadow_handle, host_vcpu, shadow_vcpu_hva);
 }
 
 static void handle___pkvm_teardown_shadow(struct kvm_cpu_context *host_ctxt)
@@ -1058,9 +1094,8 @@ static void handle___pkvm_iommu_register(struct kvm_cpu_context *host_ctxt)
 	DECLARE_REG(void *, mem, host_ctxt, 6);
 	DECLARE_REG(size_t, mem_size, host_ctxt, 7);
 
-	cpu_reg(host_ctxt, 1) = __pkvm_iommu_register(dev_id, drv_id, dev_pa,
-						      dev_size, parent_id,
-						      mem, mem_size);
+	cpu_reg(host_ctxt, 1) = __pkvm_iommu_register(
+		dev_id, drv_id, dev_pa, dev_size, parent_id, mem, mem_size);
 }
 
 static void handle___pkvm_iommu_pm_notify(struct kvm_cpu_context *host_ctxt)
@@ -1080,7 +1115,7 @@ static void handle___pkvm_iommu_alloc_domain(struct kvm_cpu_context *host_ctxt)
 {
 	DECLARE_REG(unsigned int, domain, host_ctxt, 1);
 	DECLARE_REG(unsigned int, type, host_ctxt, 2);
-	
+
 	cpu_reg(host_ctxt, 1) = __pkvm_iommu_alloc_domain(domain, type);
 }
 
@@ -1115,7 +1150,8 @@ static void handle___pkvm_iommu_map(struct kvm_cpu_context *host_ctxt)
 	DECLARE_REG(size_t, size, host_ctxt, 4);
 	DECLARE_REG(int, prot, host_ctxt, 5);
 
-	cpu_reg(host_ctxt, 1) = __pkvm_iommu_map(domain, iova, paddr, size, prot);
+	cpu_reg(host_ctxt, 1) =
+		__pkvm_iommu_map(domain, iova, paddr, size, prot);
 }
 
 static void handle___pkvm_iommu_unmap(struct kvm_cpu_context *host_ctxt)
@@ -1135,7 +1171,8 @@ static void handle___pkvm_iommu_iova_to_phys(struct kvm_cpu_context *host_ctxt)
 	cpu_reg(host_ctxt, 1) = __pkvm_iommu_iova_to_phys(domain, iova);
 }
 
-static void handle___pkvm_iommu_flush_iotlb_all(struct kvm_cpu_context *host_ctxt)
+static void
+handle___pkvm_iommu_flush_iotlb_all(struct kvm_cpu_context *host_ctxt)
 {
 	DECLARE_REG(unsigned int, iommu, host_ctxt, 1);
 
@@ -1168,17 +1205,147 @@ static void handle___kvm_clear_el2_trap_count(struct kvm_cpu_context *host_ctxt)
 	cpu_reg(host_ctxt, 1) = 0;
 }
 
+static inline phys_addr_t kvm_pgtable_stage2_pte_phys(kvm_pte_t pte)
+{
+	return (phys_addr_t)(pte & KVM_PTE_ADDR_MASK);
+}
+
+static int stage2_count_cb(u64 addr, u64 end, u32 level, kvm_pte_t *const ptep,
+			   enum kvm_pgtable_walk_flags flag, void *const arg)
+{
+	u64 *count = arg;
+	kvm_pte_t pte = READ_ONCE(*ptep);
+
+	if (!kvm_pte_valid(pte))
+		return 0;
+
+	(*count)++;
+	return 0;
+}
+
+extern struct host_kvm host_kvm;
+
+static u64 get_stage2_pt_size()
+{
+	hyp_spin_lock(&host_kvm.lock);
+
+	struct kvm_pgtable *pgt = &host_kvm.pgt;
+	if (!pgt) {
+		hyp_spin_unlock(&host_kvm.lock);
+		return -EFAULT;
+	}
+	u64 count = 0;
+	struct kvm_pgtable_walker walker = {
+		.arg = &count,
+		.cb = stage2_count_cb,
+		.flags = KVM_PGTABLE_WALK_LEAF,
+	};
+
+	int ret = kvm_pgtable_walk(pgt, 0, (1ULL << pgt->ia_bits), &walker);
+
+	hyp_spin_unlock(&host_kvm.lock);
+
+	return ret ? ret : count;
+}
+
+static void handle___pkvm_get_stage2_pt_size(struct kvm_cpu_context *host_ctxt)
+{
+	cpu_reg(host_ctxt, 1) = get_stage2_pt_size();
+}
+
+struct stage2_collect_ctx {
+	u64 *ipa;
+	u64 *pa;
+	u64 *level;
+	u64 *prot;
+	u64 cap;
+	u64 cnt;
+};
+
+static int stage2_collect_cb(u64 addr, u64 end, u32 level,
+			     kvm_pte_t *const ptep,
+			     enum kvm_pgtable_walk_flags flag, void *const arg)
+{
+	struct stage2_collect_ctx *ctx = arg;
+	kvm_pte_t pte = READ_ONCE(*ptep);
+
+	if (!kvm_pte_valid(pte))
+		return 0;
+
+	if (ctx->cnt >= ctx->cap) {
+		return -ENOSPC;
+	}
+	ctx->ipa[ctx->cnt] = addr;
+	ctx->pa[ctx->cnt] = kvm_pgtable_stage2_pte_phys(pte);
+	ctx->level[ctx->cnt] = level;
+	ctx->prot[ctx->cnt] = kvm_pgtable_stage2_pte_prot(pte);
+	ctx->cnt++;
+	return 0;
+}
+
 static void handle___pkvm_view_stage2_pt(struct kvm_cpu_context *host_ctxt)
 {
-	unsigned int fib[13]={1,1,4,5,1,4,1,9,1,9,8,1,0};
-	DECLARE_REG(unsigned int, id, host_ctxt, 1);
-	cpu_reg(host_ctxt, 1) = fib[id];
+	DECLARE_REG(void *, pool_hva, host_ctxt, 1);
+	DECLARE_REG(u64, cap, host_ctxt, 2);
+	DECLARE_REG(u64 *, pfn_list, host_ctxt, 3);
+	DECLARE_REG(u64, nr_pages, host_ctxt, 4);
+
+	u8 *base = kern_hyp_va(pool_hva);
+	size_t bytes = cap * 4 * sizeof(u64);
+	u64 i;
+
+	for (i = 0; i < nr_pages; i++) {
+		u64 pfn = READ_ONCE(pfn_list[i]);
+		int r = __pkvm_host_share_hyp(pfn);
+		if (r) {
+			cpu_reg(host_ctxt, 0) = r;
+			return;
+		}
+	}
+
+	int ret = hyp_pin_shared_mem(base, base + bytes);
+	if (ret)
+		goto unshare;
+
+	struct stage2_collect_ctx ctx = {
+		.ipa = (u64 *)base,
+		.pa = (u64 *)(base + cap * sizeof(u64)),
+		.level = (u64 *)(base + cap * 2 * sizeof(u64)),
+		.prot = (u64 *)(base + cap * 3 * sizeof(u64)),
+		.cap = cap,
+		.cnt = 0,
+	};
+
+	struct kvm_pgtable_walker walker = {
+		.arg = &ctx,
+		.cb = stage2_collect_cb,
+		.flags = KVM_PGTABLE_WALK_LEAF,
+	};
+
+	hyp_spin_lock(&host_kvm.lock);
+	struct kvm_pgtable *pgt = &host_kvm.pgt;
+
+	if (!pgt) {
+		ret = -EFAULT;
+	} else {
+		ret = kvm_pgtable_walk(pgt, 0, (1ULL << pgt->ia_bits), &walker);
+		cpu_reg(host_ctxt, 1) = ctx.cnt;
+	}
+
+	hyp_spin_unlock(&host_kvm.lock);
+	hyp_unpin_shared_mem(base, base + bytes);
+
+unshare:
+	for (i = nr_pages; i-- > 0;) {
+		__pkvm_host_unshare_hyp(READ_ONCE(pfn_list[i]));
+	}
+
+	cpu_reg(host_ctxt, 0) = ret;
 }
 
 typedef void (*hcall_t)(struct kvm_cpu_context *);
 
-#define HANDLE_FUNC(x)	[__KVM_HOST_SMCCC_FUNC_##x] = (hcall_t)handle_##x
-
+#define HANDLE_FUNC(x) [__KVM_HOST_SMCCC_FUNC_##x] = (hcall_t)handle_##x
 static const hcall_t host_hcall[] = {
 	/* ___kvm_hyp_init */
 	HANDLE_FUNC(__kvm_get_mdcr_el2),
@@ -1226,7 +1393,10 @@ static const hcall_t host_hcall[] = {
 	HANDLE_FUNC(__kvm_get_el2_trap_count),
 	HANDLE_FUNC(__kvm_clear_el2_trap_count),
 
-	HANDLE_FUNC(__pkvm_view_stage2_pt),//43
+	HANDLE_FUNC(__pkvm_view_stage2_pt), //43
+	HANDLE_FUNC(__pkvm_get_stage2_pt_size), //44
+	// HANDLE_FUNC(__pkvm_share_host_page), //45
+	// HANDLE_FUNC(__pkvm_unshare_host_page), //46
 };
 
 static inline u64 kernel__text_addr(void)
@@ -1238,7 +1408,7 @@ static inline u64 kernel__text_addr(void)
 				    "movk	%0, #0, lsl #32\n"
 				    "movk	%0, #0, lsl #48\n",
 				    kvm_get__text)
-		     : "=r" (val));
+		     : "=r"(val));
 
 	return val;
 }
@@ -1252,7 +1422,7 @@ static inline u64 kernel__etext_addr(void)
 				    "movk	%0, #0, lsl #32\n"
 				    "movk	%0, #0, lsl #48\n",
 				    kvm_get__etext)
-		     : "=r" (val));
+		     : "=r"(val));
 
 	return val;
 }
