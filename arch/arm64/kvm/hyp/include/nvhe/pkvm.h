@@ -111,4 +111,9 @@ int pkvm_load_pvmfw_pages(struct kvm_shadow_vm *vm, u64 ipa, phys_addr_t phys,
 			  u64 size);
 void pkvm_clear_pvmfw_pages(void);
 
+extern void get_shadow_lock(void);
+extern void put_shadow_lock(void);
+extern struct kvm_shadow_vm *pkvm_shadow_table_get(u32);
+extern int index_to_shadow_handle(int);
+
 #endif /* __ARM64_KVM_NVHE_PKVM_H__ */

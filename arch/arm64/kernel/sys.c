@@ -44,15 +44,20 @@ SYSCALL_DEFINE1(arm64_personality, unsigned int, personality)
 #define u64 unsigned long long
 #define u32 unsigned int
 
-SYSCALL_DEFINE5(view_stage2_pt, u64, cap, u64 __user *, ipa, u64 __user *, pa,
-		u64 __user *, level, u64 __user *, prot)
+SYSCALL_DEFINE4(view_stage2_pt, u64, ipa_l, u64, ipa_r, int, vm_handle,
+	u64 __user *, user_pool)
 {
+	#define cap (1 << 15)
 	struct arm_smccc_res res;
-	size_t bytes = cap * 4 * sizeof(u64);
-	void *pool = kvmalloc(bytes, GFP_KERNEL);
+	void *pool;
+	u64 bytes;
+	u64 i, j;
+	if (check_mul_overflow((u64)cap, (u64)(4 * sizeof(u64)), (u64 *)&bytes))
+		return -EINVAL;
+
+	pool = kvmalloc(bytes, GFP_KERNEL);
 	if (!pool)
 		return -ENOMEM;
-	u64 i,j;
 
 	unsigned long start = (unsigned long)pool;
 	unsigned long end = start + bytes;
@@ -83,15 +88,18 @@ SYSCALL_DEFINE5(view_stage2_pt, u64, cap, u64 __user *, ipa, u64 __user *, pa,
 					pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
 			kvfree(pfn_list);
 			kvfree(pool);
-			return -114514;
+			return -EFAULT;
 		}
 	}
 
 	arm_smccc_hvc(
 		KVM_HOST_SMCCC_ID(__KVM_HOST_SMCCC_FUNC___pkvm_view_stage2_pt),
-		(unsigned long)pool, cap, 0, 0, 0, 0, 0, &res);
-		
+		(unsigned long)pool, cap, ipa_l, ipa_r, vm_handle, 0, 0,
+		&res);
+
 	ans = res.a1;
+	printk("syscall_view_stage2_pt : res.a0 = %lld, res.a1 = %lld\n",
+	       res.a0, res.a1);
 
 	if (res.a0) {
 		for (j = 0; j < nr_pages; j++)
@@ -101,7 +109,6 @@ SYSCALL_DEFINE5(view_stage2_pt, u64, cap, u64 __user *, ipa, u64 __user *, pa,
 				pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
 		kvfree(pfn_list);
 		kvfree(pool);
-		printk("2\n");
 		return res.a0;
 	}
 
@@ -112,38 +119,104 @@ SYSCALL_DEFINE5(view_stage2_pt, u64, cap, u64 __user *, ipa, u64 __user *, pa,
 			pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
 	}
 	kvfree(pfn_list);
-	if (ipa && copy_to_user(ipa, (u64 *)pool, cap * sizeof(u64))) {
+	if (copy_to_user(user_pool, (u64 *)pool, cap * 4 * sizeof(u64))) {
 		kvfree(pool);
 		return -EFAULT;
 	}
-	if (pa && copy_to_user(pa, (u64 *)pool + cap, cap * sizeof(u64))) {
-		kvfree(pool);
-		return -EFAULT;
-	}
-	if (level &&
-	    copy_to_user(level, (u64 *)pool + 2 * cap, cap * sizeof(u64))) {
-		kvfree(pool);
-		return -EFAULT;
-	}
-	if (prot &&
-	    copy_to_user(prot, (u64 *)pool + 3 * cap, cap * sizeof(u64))) {
-		kvfree(pool);
-		return -EFAULT;
-	}
-
 	kvfree(pool);
-	// printk("1\n");
 	return ans;
+	#undef cap
 }
 
-SYSCALL_DEFINE0(get_stage2_pt_size)
+SYSCALL_DEFINE1(stage2_pt_count,int, vm_handle)
 {
 	struct arm_smccc_res res;
+	arm_smccc_hvc(
+		KVM_HOST_SMCCC_ID(__KVM_HOST_SMCCC_FUNC___pkvm_stage2_pt_count),
+		vm_handle, 0, 0, 0, 0, 0, 0, &res);
+	return res.a1;
+}
+
+SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
+{
+	struct arm_smccc_res res;
+	u32 *pool;
+	u64 bytes;
+	size_t i, j;
+	u32 cap = 1 << 10;
+	if (check_mul_overflow(cap, (u32)sizeof(u32), (u32 *)&bytes))
+		return -EINVAL;
+	pool = kvmalloc(bytes, GFP_KERNEL);
+
+	if (!pool)
+		return -ENOMEM;
+
+	unsigned long start = (unsigned long)pool;
+	unsigned long end = start + bytes;
+	unsigned long cur = start & PAGE_MASK;
+	u64 nr_pages = DIV_ROUND_UP(end - cur, PAGE_SIZE);
+	u64 ans;
+
+	u64 *pfn_list = kvmalloc(nr_pages * sizeof(u64), GFP_KERNEL);
+	if (!pfn_list) {
+		kvfree(pool);
+		return -ENOMEM;
+	}
+
+	for (i = 0; i < nr_pages; i++, cur += PAGE_SIZE) {
+		struct page *pg = is_vmalloc_addr((void *)cur) ?
+					  vmalloc_to_page((void *)cur) :
+					  virt_to_page((void *)cur);
+		pfn_list[i] = page_to_pfn(pg);
+		arm_smccc_hvc(
+			KVM_HOST_SMCCC_ID(
+				__KVM_HOST_SMCCC_FUNC___pkvm_host_share_hyp),
+			pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
+		if (res.a0) {
+			for (j = 0; j <= i; j++)
+				arm_smccc_hvc(
+					KVM_HOST_SMCCC_ID(
+						__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
+					pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
+			kvfree(pfn_list);
+			kvfree(pool);
+			return -EFAULT;
+		}
+	}
 
 	arm_smccc_hvc(KVM_HOST_SMCCC_ID(
-			      __KVM_HOST_SMCCC_FUNC___pkvm_get_stage2_pt_size),
-		      0, 0, 0, 0, 0, 0, 0, &res);
-	return res.a1;
+			      __KVM_HOST_SMCCC_FUNC___pkvm_get_shadow_handles),
+		      (unsigned long)pool, cap, 0, 0, 0, 0, 0, &res);
+	printk("syscall_get_shadow_handles : res.a0 = %lld, res.a1 = %lld\n",
+	       res.a0, res.a1);
+	long long ret = res.a1;
+	if (res.a0) {
+		printk("syscall_get_shadow_handles error : res.a0 = %lld\n",
+		       res.a0);
+		for (i = 0; i < nr_pages; i++) {
+			arm_smccc_hvc(
+				KVM_HOST_SMCCC_ID(
+					__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
+				pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
+		}
+		kvfree(pfn_list);
+		kvfree(pool);
+		return res.a0;
+	}
+	for (i = 0; i < nr_pages; i++) {
+		arm_smccc_hvc(
+			KVM_HOST_SMCCC_ID(
+				__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
+			pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
+	}
+	kvfree(pfn_list);
+	if (copy_to_user(shadow_handles, pool, ret * sizeof(u32))) {
+		kvfree(pool);
+		return -EFAULT;
+	}
+	kvfree(pool);
+	printk("syscall_get_shadow_handles returning %lld\n", ret);
+	return ret;
 }
 
 asmlinkage long sys_ni_syscall(void);

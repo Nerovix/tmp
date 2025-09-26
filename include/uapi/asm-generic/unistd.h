@@ -861,12 +861,13 @@ __SYSCALL(__NR_faccessat2, sys_faccessat2)
 __SYSCALL(__NR_process_madvise, sys_process_madvise)
 #define __NR_view_stage2_pt 441
 __SYSCALL(__NR_view_stage2_pt, sys_view_stage2_pt)
-#define __NR_get_stage2_pt_size 442
-__SYSCALL(__NR_get_stage2_pt_size, sys_get_stage2_pt_size)
-
+#define __NR_stage2_pt_count 442
+__SYSCALL(__NR_stage2_pt_count, sys_stage2_pt_count)
+#define __NR_get_shadow_handles 443
+__SYSCALL(__NR_get_shadow_handles, sys_get_shadow_handles)
 
 #undef __NR_syscalls
-#define __NR_syscalls 443
+#define __NR_syscalls 444
 
 /*
  * 32 bit systems traditionally used different

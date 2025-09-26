@@ -97,9 +97,8 @@ enum __kvm_host_smccc_func {
 	__KVM_HOST_SMCCC_FUNC___kvm_get_el2_trap_count,
 	__KVM_HOST_SMCCC_FUNC___kvm_clear_el2_trap_count,
 	__KVM_HOST_SMCCC_FUNC___pkvm_view_stage2_pt,
-	__KVM_HOST_SMCCC_FUNC___pkvm_get_stage2_pt_size,
-	__KVM_HOST_SMCCC_FUNC___pkvm_share_host_page,
-	__KVM_HOST_SMCCC_FUNC___pkvm_unshare_host_page,
+	__KVM_HOST_SMCCC_FUNC___pkvm_stage2_pt_count,
+	__KVM_HOST_SMCCC_FUNC___pkvm_get_shadow_handles,
 
 };
 
