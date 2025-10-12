@@ -405,6 +405,7 @@ int pkvm_iommu_map(unsigned int domain_id, unsigned long iova, phys_addr_t paddr
 				size_t size, int prot);
 size_t pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova, size_t size);
 phys_addr_t pkvm_iommu_iova_to_phys(unsigned int domain_id, unsigned long iova);
+int pkvm_view_iopt(unsigned int domain_id, u64 *pool, int cap);
 int pkvm_iommu_flush_iotlb_all(unsigned int iommu_id);
 int pkvm_iommu_rk_enable(unsigned int iommu_id);
 int pkvm_iommu_rk_disable(unsigned int iommu_id);

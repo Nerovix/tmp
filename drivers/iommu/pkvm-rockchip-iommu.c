@@ -31,6 +31,7 @@
 #include <linux/kvm_host.h>
 #include <linux/idr.h>
 #include <soc/rockchip/rockchip_iommu.h>
+#include "linux/pkvm-rockchip-iommu.h"
 
 #include <asm/kvm_rockchip_iommu.h>
 
@@ -494,6 +495,17 @@ static struct iommu_ops rk_iommu_ops_v2 = {
 	.pgsize_bitmap = RK_IOMMU_PGSIZE_BITMAP,
 	.of_xlate = rk_iommu_of_xlate,
 };
+
+
+int rk_view_iopt(struct iommu_domain *domain, u64 *pool, int cap)
+{
+	if(domain->ops!= &rk_iommu_ops_v2)
+		return -ENODEV;
+	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
+	return pkvm_view_iopt(rk_domain->id, pool, cap);
+}
+EXPORT_SYMBOL_GPL(rk_view_iopt);
+
 
 static const struct rockchip_iommu_data iommu_data_v2 = {
 	.version = 0x2,

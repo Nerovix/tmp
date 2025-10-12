@@ -57,8 +57,8 @@ struct pkvm_iommu_ops {
 	 * Returns true if the data abort has been handled.
 	 */
 	bool (*host_dabt_handler)(struct pkvm_iommu *dev,
-				  struct kvm_cpu_context *host_ctxt,
-				  u32 esr, phys_addr_t pa, size_t off);
+				  struct kvm_cpu_context *host_ctxt, u32 esr,
+				  phys_addr_t pa, size_t off);
 
 	int (*alloc_domain)(unsigned int domain_id, u32 type);
 	int (*free_domain)(unsigned int domain_id);
@@ -66,9 +66,10 @@ struct pkvm_iommu_ops {
 	int (*attach_dev)(unsigned int iommu_id, unsigned int domain_id);
 	int (*detach_dev)(unsigned int iommu_id, unsigned int domain_id);
 
-	int (*map)(unsigned int domain_id, unsigned long iova, phys_addr_t paddr,
-						size_t size, int prot);
-	size_t (*unmap)(unsigned int domain_id, unsigned long iova, size_t size);
+	int (*map)(unsigned int domain_id, unsigned long iova,
+		   phys_addr_t paddr, size_t size, int prot);
+	size_t (*unmap)(unsigned int domain_id, unsigned long iova,
+			size_t size);
 
 	phys_addr_t (*iova_to_phys)(unsigned int domain_id, unsigned long iova);
 	int (*flush_iotlb_all)(unsigned int iommu_id);
@@ -80,6 +81,11 @@ struct pkvm_iommu_ops {
 	/* Used for device assignment switching. */
 	int (*rk_enable_hyp)(unsigned int domain_id);
 	int (*rk_disable_hyp)(unsigned int domain_id);
+
+	int (*get_all_domain_ids)(unsigned int *pool);
+
+	int (*get_iopt)(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
+			int cap);
 
 	/* Amount of memory allocated per-device for use by the driver. */
 	size_t data_size;
@@ -99,11 +105,11 @@ struct pkvm_iommu {
 	char data[];
 };
 
-int __pkvm_iommu_driver_init(enum pkvm_iommu_driver_id id, void *data, size_t size);
+int __pkvm_iommu_driver_init(enum pkvm_iommu_driver_id id, void *data,
+			     size_t size);
 int __pkvm_iommu_register(unsigned long dev_id,
-			  enum pkvm_iommu_driver_id drv_id,
-			  phys_addr_t dev_pa, size_t dev_size,
-			  unsigned long parent_id,
+			  enum pkvm_iommu_driver_id drv_id, phys_addr_t dev_pa,
+			  size_t dev_size, unsigned long parent_id,
 			  void *kern_mem_va, size_t mem_size);
 int __pkvm_iommu_pm_notify(unsigned long dev_id,
 			   enum pkvm_iommu_pm_event event);
@@ -112,10 +118,12 @@ int __pkvm_iommu_alloc_domain(unsigned int domain_id, u32 type);
 int __pkvm_iommu_attach_dev(unsigned int iommu_id, unsigned int domain_id);
 int __pkvm_iommu_detach_dev(unsigned int iommu_id, unsigned int domain_id);
 int __pkvm_iommu_free_domain(unsigned int domain_id);
-int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova, phys_addr_t paddr,
-				size_t size, int prot);
-size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova, size_t size);
-phys_addr_t __pkvm_iommu_iova_to_phys(unsigned int domain_id, unsigned long iova);
+int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
+		     phys_addr_t paddr, size_t size, int prot);
+size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
+			  size_t size);
+phys_addr_t __pkvm_iommu_iova_to_phys(unsigned int domain_id,
+				      unsigned long iova);
 int __pkvm_iommu_flush_iotlb_all(unsigned int iommu_id);
 int __pkvm_iommu_rk_enable(unsigned int iommu_id);
 int __pkvm_iommu_rk_disable(unsigned int iommu_id);
@@ -128,8 +136,11 @@ bool pkvm_iommu_host_dabt_handler(struct kvm_cpu_context *host_ctxt, u32 esr,
 void pkvm_iommu_host_stage2_idmap(phys_addr_t start, phys_addr_t end,
 				  enum kvm_pgtable_prot prot);
 
+int __pkvm_view_iopt(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
+		   int cap);
+
 extern const struct pkvm_iommu_ops pkvm_s2mpu_ops;
 extern const struct pkvm_iommu_ops pkvm_sysmmu_sync_ops;
 extern const struct pkvm_iommu_ops pkvm_rockchip_iommu_ops;
 
-#endif	/* __ARM64_KVM_NVHE_IOMMU_H__ */
+#endif /* __ARM64_KVM_NVHE_IOMMU_H__ */

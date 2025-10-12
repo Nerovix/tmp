@@ -99,6 +99,7 @@ enum __kvm_host_smccc_func {
 	__KVM_HOST_SMCCC_FUNC___pkvm_view_stage2_pt,
 	__KVM_HOST_SMCCC_FUNC___pkvm_stage2_pt_count,
 	__KVM_HOST_SMCCC_FUNC___pkvm_get_shadow_handles,
+	__KVM_HOST_SMCCC_FUNC___pkvm_view_iopt,
 
 };
 

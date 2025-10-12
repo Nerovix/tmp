@@ -72,9 +72,12 @@ static const struct pkvm_iommu_ops *get_driver_ops(enum pkvm_iommu_driver_id id)
 	case PKVM_IOMMU_DRIVER_S2MPU:
 		return IS_ENABLED(CONFIG_KVM_S2MPU) ? &pkvm_s2mpu_ops : NULL;
 	case PKVM_IOMMU_DRIVER_SYSMMU_SYNC:
-		return IS_ENABLED(CONFIG_KVM_S2MPU) ? &pkvm_sysmmu_sync_ops : NULL;
+		return IS_ENABLED(CONFIG_KVM_S2MPU) ? &pkvm_sysmmu_sync_ops :
+						      NULL;
 	case PKVM_IOMMU_DRIVER_ROCKCHIP_IOMMU:
-		return IS_ENABLED(CONFIG_KVM_ROCKCHIP_IOMMU) ? &pkvm_rockchip_iommu_ops : NULL;	
+		return IS_ENABLED(CONFIG_KVM_ROCKCHIP_IOMMU) ?
+			       &pkvm_rockchip_iommu_ops :
+			       NULL;
 	default:
 		return NULL;
 	}
@@ -83,15 +86,15 @@ static const struct pkvm_iommu_ops *get_driver_ops(enum pkvm_iommu_driver_id id)
 static inline bool driver_acquire_init(struct pkvm_iommu_driver *drv)
 {
 	return atomic_cmpxchg_acquire(&drv->state, IOMMU_DRIVER_NOT_READY,
-				      IOMMU_DRIVER_INITIALIZING)
-			== IOMMU_DRIVER_NOT_READY;
+				      IOMMU_DRIVER_INITIALIZING) ==
+	       IOMMU_DRIVER_NOT_READY;
 }
 
 static inline void driver_release_init(struct pkvm_iommu_driver *drv,
 				       bool success)
 {
-	atomic_set_release(&drv->state, success ? IOMMU_DRIVER_READY
-						: IOMMU_DRIVER_NOT_READY);
+	atomic_set_release(&drv->state, success ? IOMMU_DRIVER_READY :
+						  IOMMU_DRIVER_NOT_READY);
 }
 
 static inline bool is_driver_ready(struct pkvm_iommu_driver *drv)
@@ -132,7 +135,8 @@ static inline struct pkvm_iommu *alloc_iommu(struct pkvm_iommu_driver *drv,
 	return ptr;
 }
 
-static inline void free_iommu(struct pkvm_iommu_driver *drv, struct pkvm_iommu *ptr)
+static inline void free_iommu(struct pkvm_iommu_driver *drv,
+			      struct pkvm_iommu *ptr)
 {
 	size_t size = __iommu_alloc_size(drv);
 
@@ -142,7 +146,7 @@ static inline void free_iommu(struct pkvm_iommu_driver *drv, struct pkvm_iommu *
 		return;
 
 	/* Only allow freeing the last allocated buffer. */
-	if ((void*)ptr + size != iommu_mem_pool)
+	if ((void *)ptr + size != iommu_mem_pool)
 		return;
 
 	iommu_mem_pool -= size;
@@ -179,9 +183,9 @@ static bool is_mmio_range(phys_addr_t base, size_t size)
 static int __snapshot_host_stage2(u64 start, u64 pa_max, u32 level,
 				  kvm_pte_t *ptep,
 				  enum kvm_pgtable_walk_flags flags,
-				  void * const arg)
+				  void *const arg)
 {
-	struct pkvm_iommu_driver * const drv = arg;
+	struct pkvm_iommu_driver *const drv = arg;
 	u64 end = start + kvm_granule_size(level);
 	kvm_pte_t pte = *ptep;
 
@@ -196,12 +200,12 @@ static int __snapshot_host_stage2(u64 start, u64 pa_max, u32 level,
 	return 0;
 }
 
-static int snapshot_host_stage2(struct pkvm_iommu_driver * const drv)
+static int snapshot_host_stage2(struct pkvm_iommu_driver *const drv)
 {
 	struct kvm_pgtable_walker walker = {
-		.cb	= __snapshot_host_stage2,
-		.arg	= drv,
-		.flags	= KVM_PGTABLE_WALK_LEAF,
+		.cb = __snapshot_host_stage2,
+		.arg = drv,
+		.flags = KVM_PGTABLE_WALK_LEAF,
 	};
 	struct kvm_pgtable *pgt = &host_kvm.pgt;
 
@@ -217,7 +221,7 @@ static bool validate_against_existing_iommus(struct pkvm_iommu *dev)
 
 	assert_host_component_locked();
 
-	list_for_each_entry(other, &iommu_list, list) {
+	list_for_each_entry (other, &iommu_list, list) {
 		/* Device ID must be unique. */
 		if (dev->id == other->id)
 			return false;
@@ -235,7 +239,7 @@ static struct pkvm_iommu *find_iommu_by_id(unsigned long id)
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
+	list_for_each_entry (dev, &iommu_list, list) {
 		if (dev->id == id)
 			return dev;
 	}
@@ -249,7 +253,8 @@ static struct pkvm_iommu *find_iommu_by_id(unsigned long id)
  * arguments are passed in a shared memory buffer. The driver is expected to
  * initialize it's page-table bookkeeping.
  */
-int __pkvm_iommu_driver_init(enum pkvm_iommu_driver_id id, void *data, size_t size)
+int __pkvm_iommu_driver_init(enum pkvm_iommu_driver_id id, void *data,
+			     size_t size)
 {
 	struct pkvm_iommu_driver *drv;
 	const struct pkvm_iommu_ops *ops;
@@ -309,9 +314,8 @@ out_unlock:
 }
 
 int __pkvm_iommu_register(unsigned long dev_id,
-			  enum pkvm_iommu_driver_id drv_id,
-			  phys_addr_t dev_pa, size_t dev_size,
-			  unsigned long parent_id,
+			  enum pkvm_iommu_driver_id drv_id, phys_addr_t dev_pa,
+			  size_t dev_size, unsigned long parent_id,
 			  void *kern_mem_va, size_t mem_size)
 {
 	struct pkvm_iommu *dev = NULL;
@@ -393,7 +397,8 @@ int __pkvm_iommu_register(unsigned long dev_id,
 		}
 
 		if (dev->parent->ops->validate_child) {
-			ret = dev->parent->ops->validate_child(dev->parent, dev);
+			ret = dev->parent->ops->validate_child(dev->parent,
+							       dev);
 			if (ret)
 				goto out_free;
 		}
@@ -416,8 +421,8 @@ int __pkvm_iommu_register(unsigned long dev_id,
 			goto out_free;
 
 		/* Create EL2 mapping for the device. Do it last as it is irreversible. */
-		dev->va = (void *)__pkvm_create_private_mapping(dev_pa, dev_size,
-								PAGE_HYP_DEVICE);
+		dev->va = (void *)__pkvm_create_private_mapping(
+			dev_pa, dev_size, PAGE_HYP_DEVICE);
 		if (IS_ERR(dev->va)) {
 			ret = PTR_ERR(dev->va);
 			goto out_free;
@@ -459,9 +464,10 @@ int __pkvm_iommu_alloc_domain(unsigned int domain_id, u32 type)
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
+	list_for_each_entry (dev, &iommu_list, list) {
 		ret = dev->ops->alloc_domain ?
-				dev->ops->alloc_domain(domain_id, type) : 0;
+			      dev->ops->alloc_domain(domain_id, type) :
+			      0;
 		if (ret)
 			return ret;
 	}
@@ -476,9 +482,9 @@ int __pkvm_iommu_free_domain(unsigned int domain_id)
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
-		ret = dev->ops->free_domain ?
-				dev->ops->free_domain(domain_id) : 0;
+	list_for_each_entry (dev, &iommu_list, list) {
+		ret = dev->ops->free_domain ? dev->ops->free_domain(domain_id) :
+					      0;
 		if (ret)
 			return ret;
 	}
@@ -493,9 +499,10 @@ int __pkvm_iommu_attach_dev(unsigned int iommu_id, unsigned int domain_id)
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
+	list_for_each_entry (dev, &iommu_list, list) {
 		ret = dev->ops->attach_dev ?
-				dev->ops->attach_dev(iommu_id, domain_id) : 0;
+			      dev->ops->attach_dev(iommu_id, domain_id) :
+			      0;
 		if (ret)
 			return ret;
 	}
@@ -510,9 +517,10 @@ int __pkvm_iommu_detach_dev(unsigned int iommu_id, unsigned int domain_id)
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
+	list_for_each_entry (dev, &iommu_list, list) {
 		ret = dev->ops->detach_dev ?
-				dev->ops->detach_dev(iommu_id, domain_id) : 0;
+			      dev->ops->detach_dev(iommu_id, domain_id) :
+			      0;
 		if (ret)
 			return ret;
 	}
@@ -520,17 +528,18 @@ int __pkvm_iommu_detach_dev(unsigned int iommu_id, unsigned int domain_id)
 	return ret;
 }
 
-int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova, phys_addr_t paddr,
-				size_t size, int prot)
+int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
+		     phys_addr_t paddr, size_t size, int prot)
 {
 	struct pkvm_iommu *dev;
 	int ret;
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
-		ret = dev->ops->map ?
-				dev->ops->map(domain_id, iova, paddr, size, prot) : 0;
+	list_for_each_entry (dev, &iommu_list, list) {
+		ret = dev->ops->map ? dev->ops->map(domain_id, iova, paddr,
+						    size, prot) :
+				      0;
 		if (ret)
 			return ret;
 	}
@@ -538,16 +547,17 @@ int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova, phys_addr_t pad
 	return ret;
 }
 
-size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova, size_t size)
+size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
+			  size_t size)
 {
 	struct pkvm_iommu *dev;
 	size_t ret;
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
-		ret = dev->ops->unmap ?
-				dev->ops->unmap(domain_id, iova, size) : 0;
+	list_for_each_entry (dev, &iommu_list, list) {
+		ret = dev->ops->unmap ? dev->ops->unmap(domain_id, iova, size) :
+					0;
 		if (ret)
 			return ret;
 	}
@@ -555,18 +565,40 @@ size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova, size_t siz
 	return ret;
 }
 
-phys_addr_t __pkvm_iommu_iova_to_phys(unsigned int domain_id, unsigned long iova)
+phys_addr_t __pkvm_iommu_iova_to_phys(unsigned int domain_id,
+				      unsigned long iova)
 {
 	struct pkvm_iommu *dev;
 	phys_addr_t ret;
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
+	list_for_each_entry (dev, &iommu_list, list) {
 		ret = dev->ops->iova_to_phys ?
-				dev->ops->iova_to_phys(domain_id, iova) : 0;
+			      dev->ops->iova_to_phys(domain_id, iova) :
+			      0;
 		if (ret)
 			return ret;
+	}
+
+	return ret;
+}
+
+int __pkvm_view_iopt(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
+		     int cap)
+{
+	struct pkvm_iommu *dev;
+	int ret = -ENOENT;
+
+	assert_host_component_locked();
+
+	list_for_each_entry (dev, &iommu_list, list) {
+		if (dev->ops->get_iopt) {
+			ret = dev->ops->get_iopt(domain_id, ipas, pas, ptes,
+						 cap);
+			if (ret >= 0)
+				return ret;
+		}
 	}
 
 	return ret;
@@ -579,9 +611,10 @@ int __pkvm_iommu_flush_iotlb_all(unsigned int iommu_id)
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
+	list_for_each_entry (dev, &iommu_list, list) {
 		ret = dev->ops->flush_iotlb_all ?
-				dev->ops->flush_iotlb_all(iommu_id) : 0;
+			      dev->ops->flush_iotlb_all(iommu_id) :
+			      0;
 		if (ret)
 			return ret;
 	}
@@ -596,9 +629,8 @@ int __pkvm_iommu_rk_enable(unsigned int iommu_id)
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
-		ret = dev->ops->rk_enable ?
-				dev->ops->rk_enable(iommu_id) : 0;
+	list_for_each_entry (dev, &iommu_list, list) {
+		ret = dev->ops->rk_enable ? dev->ops->rk_enable(iommu_id) : 0;
 		if (ret)
 			return ret;
 	}
@@ -613,9 +645,8 @@ int __pkvm_iommu_rk_disable(unsigned int iommu_id)
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
-		ret = dev->ops->rk_disable ?
-				dev->ops->rk_disable(iommu_id) : 0;
+	list_for_each_entry (dev, &iommu_list, list) {
+		ret = dev->ops->rk_disable ? dev->ops->rk_disable(iommu_id) : 0;
 		if (ret)
 			return ret;
 	}
@@ -630,9 +661,10 @@ int __pkvm_iommu_rk_enable_hyp(unsigned int domain_id)
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
+	list_for_each_entry (dev, &iommu_list, list) {
 		ret = dev->ops->rk_enable_hyp ?
-				dev->ops->rk_enable_hyp(domain_id) : 0;
+			      dev->ops->rk_enable_hyp(domain_id) :
+			      0;
 		if (ret)
 			return ret;
 	}
@@ -647,9 +679,10 @@ int __pkvm_iommu_rk_disable_hyp(unsigned int domain_id)
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
+	list_for_each_entry (dev, &iommu_list, list) {
 		ret = dev->ops->rk_disable_hyp ?
-				dev->ops->rk_disable_hyp(domain_id) : 0;
+			      dev->ops->rk_disable_hyp(domain_id) :
+			      0;
 		if (ret)
 			return ret;
 	}
@@ -699,7 +732,7 @@ int pkvm_iommu_host_stage2_adjust_range(phys_addr_t addr, phys_addr_t *start,
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
+	list_for_each_entry (dev, &iommu_list, list) {
 		dev_start = dev->pa;
 		dev_end = dev_start + dev->size;
 
@@ -723,19 +756,20 @@ bool pkvm_iommu_host_dabt_handler(struct kvm_cpu_context *host_ctxt, u32 esr,
 
 	assert_host_component_locked();
 
-	list_for_each_entry(dev, &iommu_list, list) {
+	list_for_each_entry (dev, &iommu_list, list) {
 		if (dev->pa && dev->size) {
 			if (pa < dev->pa || pa >= dev->pa + dev->size)
 				continue;
 
 			/* No 'powered' check - the host assumes it is powered. */
 			if (!dev->ops->host_dabt_handler ||
-				!dev->ops->host_dabt_handler(dev, host_ctxt, esr, pa, pa - dev->pa))
+			    !dev->ops->host_dabt_handler(dev, host_ctxt, esr,
+							 pa, pa - dev->pa))
 				return false;
-		}
-		else {
+		} else {
 			if (!dev->ops->host_dabt_handler ||
-				!dev->ops->host_dabt_handler(dev, host_ctxt, esr, pa, NULL))
+			    !dev->ops->host_dabt_handler(dev, host_ctxt, esr,
+							 pa, NULL))
 				return false;
 		}
 
@@ -756,11 +790,12 @@ void pkvm_iommu_host_stage2_idmap(phys_addr_t start, phys_addr_t end,
 
 	for (i = 0; i < ARRAY_SIZE(iommu_drivers); i++) {
 		drv = get_driver(i);
-		if (drv && is_driver_ready(drv) && drv->ops->host_stage2_idmap_prepare)
+		if (drv && is_driver_ready(drv) &&
+		    drv->ops->host_stage2_idmap_prepare)
 			drv->ops->host_stage2_idmap_prepare(start, end, prot);
 	}
 
-	list_for_each_entry(dev, &iommu_list, list) {
+	list_for_each_entry (dev, &iommu_list, list) {
 		if (dev->powered && dev->ops->host_stage2_idmap_apply)
 			dev->ops->host_stage2_idmap_apply(dev, start, end);
 	}

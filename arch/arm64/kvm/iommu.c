@@ -12,7 +12,8 @@ static unsigned long dev_to_id(struct device *dev)
 	return (unsigned long)dev;
 }
 
-int pkvm_iommu_driver_init(enum pkvm_iommu_driver_id id, void *data, size_t size)
+int pkvm_iommu_driver_init(enum pkvm_iommu_driver_id id, void *data,
+			   size_t size)
 {
 	return kvm_call_hyp_nvhe(__pkvm_iommu_driver_init, id, data, size);
 }
@@ -28,8 +29,8 @@ int pkvm_iommu_register(struct device *dev, enum pkvm_iommu_driver_id drv_id,
 	 * more memory. In that case allocate a page and retry.
 	 * We assume that hyp never allocates more than a page per hypcall.
 	 */
-	ret = kvm_call_hyp_nvhe(__pkvm_iommu_register, dev_to_id(dev),
-				drv_id, pa, size, dev_to_id(parent), NULL, 0);
+	ret = kvm_call_hyp_nvhe(__pkvm_iommu_register, dev_to_id(dev), drv_id,
+				pa, size, dev_to_id(parent), NULL, 0);
 	if (ret == -ENOMEM) {
 		mem = (void *)__get_free_page(GFP_KERNEL);
 		if (!mem)
@@ -86,10 +87,11 @@ int pkvm_iommu_detach_dev(unsigned int iommu_id, unsigned int domain_id)
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_detach_dev);
 
-int pkvm_iommu_map(unsigned int domain_id, unsigned long iova, phys_addr_t paddr,
-				size_t size, int prot)
+int pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
+		   phys_addr_t paddr, size_t size, int prot)
 {
-	return kvm_call_hyp_nvhe(__pkvm_iommu_map, domain_id, iova, paddr, size, prot);
+	return kvm_call_hyp_nvhe(__pkvm_iommu_map, domain_id, iova, paddr, size,
+				 prot);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_map);
 
@@ -104,6 +106,12 @@ phys_addr_t pkvm_iommu_iova_to_phys(unsigned int domain_id, unsigned long iova)
 	return kvm_call_hyp_nvhe(__pkvm_iommu_iova_to_phys, domain_id, iova);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_iova_to_phys);
+
+int pkvm_view_iopt(unsigned int domain_id, u64 *pool, int cap)
+{
+	return kvm_call_hyp_nvhe(__pkvm_view_iopt, domain_id, pool, cap);
+}
+EXPORT_SYMBOL_GPL(pkvm_view_iopt);
 
 int pkvm_iommu_flush_iotlb_all(unsigned int iommu_id)
 {

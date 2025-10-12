@@ -865,9 +865,11 @@ __SYSCALL(__NR_view_stage2_pt, sys_view_stage2_pt)
 __SYSCALL(__NR_stage2_pt_count, sys_stage2_pt_count)
 #define __NR_get_shadow_handles 443
 __SYSCALL(__NR_get_shadow_handles, sys_get_shadow_handles)
+#define __NR_view_iopt 444
+__SYSCALL(__NR_view_iopt, sys_view_iopt)
 
 #undef __NR_syscalls
-#define __NR_syscalls 444
+#define __NR_syscalls 445
 
 /*
  * 32 bit systems traditionally used different

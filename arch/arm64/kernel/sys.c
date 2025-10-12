@@ -6,7 +6,10 @@
  * Author: Catalin Marinas <catalin.marinas@arm.com>
  */
 
+#include "linux/iommu.h"
+#include "linux/platform_device.h"
 #include <linux/compiler.h>
+#include <linux/device/bus.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
@@ -16,12 +19,15 @@
 #include <linux/syscalls.h>
 #include <linux/uaccess.h>
 #include <linux/kvm_host.h>
+#include <linux/kmod.h>
 
 #include <asm/cpufeature.h>
 #include <asm/syscall.h>
 
 #include <linux/arm-smccc.h>
 #include <kvm/arm_hypercalls.h>
+#include "linux/pkvm-rockchip-iommu.h"
+
 
 SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len, unsigned long,
 		prot, unsigned long, flags, unsigned long, fd, unsigned long,
@@ -45,9 +51,9 @@ SYSCALL_DEFINE1(arm64_personality, unsigned int, personality)
 #define u32 unsigned int
 
 SYSCALL_DEFINE4(view_stage2_pt, u64, ipa_l, u64, ipa_r, int, vm_handle,
-	u64 __user *, user_pool)
+		u64 __user *, user_pool)
 {
-	#define cap (1 << 15)
+#define cap (1 << 15)
 	struct arm_smccc_res res;
 	void *pool;
 	u64 bytes;
@@ -55,7 +61,7 @@ SYSCALL_DEFINE4(view_stage2_pt, u64, ipa_l, u64, ipa_r, int, vm_handle,
 	if (check_mul_overflow((u64)cap, (u64)(4 * sizeof(u64)), (u64 *)&bytes))
 		return -EINVAL;
 
-	pool = kvmalloc(bytes, GFP_KERNEL);
+	pool = kmalloc(bytes, GFP_KERNEL);
 	if (!pool)
 		return -ENOMEM;
 
@@ -65,9 +71,9 @@ SYSCALL_DEFINE4(view_stage2_pt, u64, ipa_l, u64, ipa_r, int, vm_handle,
 	u64 nr_pages = DIV_ROUND_UP(end - cur, PAGE_SIZE);
 	u64 ans;
 
-	u64 *pfn_list = kvmalloc(nr_pages * sizeof(u64), GFP_KERNEL);
+	u64 *pfn_list = kmalloc(nr_pages * sizeof(u64), GFP_KERNEL);
 	if (!pfn_list) {
-		kvfree(pool);
+		kfree(pool);
 		return -ENOMEM;
 	}
 
@@ -86,16 +92,15 @@ SYSCALL_DEFINE4(view_stage2_pt, u64, ipa_l, u64, ipa_r, int, vm_handle,
 					KVM_HOST_SMCCC_ID(
 						__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
 					pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
-			kvfree(pfn_list);
-			kvfree(pool);
+			kfree(pfn_list);
+			kfree(pool);
 			return -EFAULT;
 		}
 	}
 
 	arm_smccc_hvc(
 		KVM_HOST_SMCCC_ID(__KVM_HOST_SMCCC_FUNC___pkvm_view_stage2_pt),
-		(unsigned long)pool, cap, ipa_l, ipa_r, vm_handle, 0, 0,
-		&res);
+		(unsigned long)pool, cap, ipa_l, ipa_r, vm_handle, 0, 0, &res);
 
 	ans = res.a1;
 	printk("syscall_view_stage2_pt : res.a0 = %lld, res.a1 = %lld\n",
@@ -107,8 +112,8 @@ SYSCALL_DEFINE4(view_stage2_pt, u64, ipa_l, u64, ipa_r, int, vm_handle,
 				KVM_HOST_SMCCC_ID(
 					__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
 				pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
-		kvfree(pfn_list);
-		kvfree(pool);
+		kfree(pfn_list);
+		kfree(pool);
 		return res.a0;
 	}
 
@@ -118,17 +123,17 @@ SYSCALL_DEFINE4(view_stage2_pt, u64, ipa_l, u64, ipa_r, int, vm_handle,
 				__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
 			pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
 	}
-	kvfree(pfn_list);
+	kfree(pfn_list);
 	if (copy_to_user(user_pool, (u64 *)pool, cap * 4 * sizeof(u64))) {
-		kvfree(pool);
+		kfree(pool);
 		return -EFAULT;
 	}
-	kvfree(pool);
+	kfree(pool);
 	return ans;
-	#undef cap
+#undef cap
 }
 
-SYSCALL_DEFINE1(stage2_pt_count,int, vm_handle)
+SYSCALL_DEFINE1(stage2_pt_count, int, vm_handle)
 {
 	struct arm_smccc_res res;
 	arm_smccc_hvc(
@@ -146,7 +151,7 @@ SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
 	u32 cap = 1 << 10;
 	if (check_mul_overflow(cap, (u32)sizeof(u32), (u32 *)&bytes))
 		return -EINVAL;
-	pool = kvmalloc(bytes, GFP_KERNEL);
+	pool = kmalloc(bytes, GFP_KERNEL);
 
 	if (!pool)
 		return -ENOMEM;
@@ -157,9 +162,9 @@ SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
 	u64 nr_pages = DIV_ROUND_UP(end - cur, PAGE_SIZE);
 	u64 ans;
 
-	u64 *pfn_list = kvmalloc(nr_pages * sizeof(u64), GFP_KERNEL);
+	u64 *pfn_list = kmalloc(nr_pages * sizeof(u64), GFP_KERNEL);
 	if (!pfn_list) {
-		kvfree(pool);
+		kfree(pool);
 		return -ENOMEM;
 	}
 
@@ -178,8 +183,8 @@ SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
 					KVM_HOST_SMCCC_ID(
 						__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
 					pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
-			kvfree(pfn_list);
-			kvfree(pool);
+			kfree(pfn_list);
+			kfree(pool);
 			return -EFAULT;
 		}
 	}
@@ -199,8 +204,8 @@ SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
 					__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
 				pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
 		}
-		kvfree(pfn_list);
-		kvfree(pool);
+		kfree(pfn_list);
+		kfree(pool);
 		return res.a0;
 	}
 	for (i = 0; i < nr_pages; i++) {
@@ -209,14 +214,75 @@ SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
 				__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
 			pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
 	}
-	kvfree(pfn_list);
+	kfree(pfn_list);
 	if (copy_to_user(shadow_handles, pool, ret * sizeof(u32))) {
-		kvfree(pool);
+		kfree(pool);
 		return -EFAULT;
 	}
-	kvfree(pool);
+	kfree(pool);
 	printk("syscall_get_shadow_handles returning %lld\n", ret);
 	return ret;
+}
+
+
+
+SYSCALL_DEFINE2(view_iopt, char __user *, device_name, u64 __user *, user_pool)
+{
+#define cap (1 << 15)
+	char name[100];
+	u64 *pool;
+	int ret = 0;
+	struct device *dev;
+	struct iommu_domain *domain;
+	typeof(rk_view_iopt) *view_iopt_fn;
+
+	ret = strncpy_from_user_nofault(name, device_name, 100);
+	if (ret < 0) {
+		printk("view_iopt: copy from user failed\n");
+		return -EFAULT;
+	}
+
+	dev = bus_find_device_by_name(&platform_bus_type, NULL, name);
+	if (!dev) {
+		printk("view_iopt: cannot find device %s\n", name);
+		return -ENODEV;
+	}
+
+	domain = iommu_get_domain_for_dev(dev);
+	if (!domain) {
+		printk("view_iopt: device %s has no iommu domain\n", name);
+		return -ENODEV;
+	}
+
+	pool = kmalloc(cap * 3 * sizeof(u64), GFP_KERNEL);
+	if (!pool){
+		printk("view_iopt: kmalloc failed\n");
+		return -ENOMEM;
+	}
+
+	view_iopt_fn = symbol_get(rk_view_iopt);
+	if(!view_iopt_fn){
+		printk("view_iopt: cannot find rk_view_iopt, insmod iommu driver first\n");
+		kfree(pool);
+		return -EINVAL;
+	}
+
+	ret = view_iopt_fn(domain, pool, cap);
+	symbol_put(rk_view_iopt);
+	if (ret < 0) {
+		printk("view_iopt: hypercall view_iopt returned %d\n", ret);
+		kfree(pool);
+		return ret;
+	}
+
+	if (copy_to_user(user_pool, pool, cap * 3 * sizeof(u64))) {
+		printk("view_iopt: copy to user failed\n");
+		kfree(pool);
+		return -EFAULT;
+	}
+	kfree(pool);
+	return ret;
+#undef cap
 }
 
 asmlinkage long sys_ni_syscall(void);

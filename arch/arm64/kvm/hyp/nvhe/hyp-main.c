@@ -8,6 +8,7 @@
 #include "linux/cpu.h"
 #include "linux/mm.h"
 #include "linux/spinlock.h"
+#include "linux/usb.h"
 #include "nvhe/spinlock.h"
 #include <kvm/arm_hypercalls.h>
 
@@ -1223,7 +1224,7 @@ struct stage2_collect_ctx {
 	u64 *ipa;
 	u64 *pa;
 	u64 *level;
-	u64 *prot;
+	u64 *pte;
 	u64 cap;
 	u64 cnt;
 	u64 vmcnt;
@@ -1245,7 +1246,7 @@ static int stage2_collect_cb(u64 addr, u64 end, u32 level,
 	ctx->ipa[ctx->cnt] = addr;
 	ctx->pa[ctx->cnt] = kvm_pgtable_stage2_pte_phys(pte);
 	ctx->level[ctx->cnt] = level;
-	ctx->prot[ctx->cnt] = kvm_pgtable_stage2_pte_prot(pte);
+	ctx->pte[ctx->cnt] = pte;
 	ctx->cnt++;
 	return 0;
 }
@@ -1291,7 +1292,7 @@ static void handle___pkvm_view_stage2_pt(struct kvm_cpu_context *host_ctxt)
 		.ipa = (u64 *)(base + cap * 0 * sizeof(u64)),
 		.pa = (u64 *)(base + cap * 1 * sizeof(u64)),
 		.level = (u64 *)(base + cap * 2 * sizeof(u64)),
-		.prot = (u64 *)(base + cap * 3 * sizeof(u64)),
+		.pte = (u64 *)(base + cap * 3 * sizeof(u64)),
 		.cap = cap,
 		.cnt = 0,
 		.vmcnt = 0,
@@ -1333,13 +1334,23 @@ out:
 static int stage2_count_cb(u64 addr, u64 end, u32 level, kvm_pte_t *const ptep,
 			   enum kvm_pgtable_walk_flags flag, void *const arg)
 {
-	u64 *count = arg;
+	long long *count = arg;
 	kvm_pte_t pte = READ_ONCE(*ptep);
 
 	if (!kvm_pte_valid(pte))
 		return 0;
 
-	(*count)++;
+	u64 ipa = addr;
+	u64 pa = kvm_pgtable_stage2_pte_phys(pte);
+	if ((pte & PKVM_PAGE_SHARED_BORROWED) == PKVM_PAGE_SHARED_BORROWED) {
+		if ((*count) > 0)
+			(*count) = -(*count);
+	}
+	if ((*count) < 0) {
+		(*count)--;
+	} else {
+		(*count)++;
+	}
 	return 0;
 }
 
@@ -1347,7 +1358,7 @@ static u64 get_stage2_pt_size(int vm_handle)
 {
 	struct kvm_pgtable *pgt;
 	int ret = 0;
-	u64 count = 0;
+	long long count = 1;
 
 	struct kvm_pgtable_walker walker = {
 		.arg = &count,
@@ -1382,7 +1393,10 @@ static u64 get_stage2_pt_size(int vm_handle)
 		ret = kvm_pgtable_walk(pgt, 0, (1ULL << pgt->ia_bits), &walker);
 		hyp_spin_unlock(&vm->lock);
 	}
-
+	if (count > 0)
+		count--;
+	else
+		count++;
 	return ret ? ret : count;
 }
 
@@ -1418,6 +1432,34 @@ static void handle___pkvm_get_shadow_handles(struct kvm_cpu_context *host_ctxt)
 out:
 	cpu_reg(host_ctxt, 0) = ret;
 	cpu_reg(host_ctxt, 1) = cnt;
+}
+
+static void handle___pkvm_view_iopt(struct kvm_cpu_context *host_ctxt)
+{
+	DECLARE_REG(int, domain_id, host_ctxt, 1);
+	DECLARE_REG(u64 *, pool_hva, host_ctxt, 2);
+	DECLARE_REG(u32, cap, host_ctxt, 3);
+
+	u8 *base = kern_hyp_va((void *)pool_hva);
+	size_t bytes = cap * sizeof(u64) * 3;
+	int ret, res = 0;
+
+	ret = hyp_pin_shared_mem(base, base + bytes);
+	if (ret)
+		goto out;
+
+	ret = __pkvm_view_iopt(domain_id, (u64*)(base + cap * 0 * sizeof(u64)),
+			       (u64*)(base + cap * 1 * sizeof(u64)),
+			       (u64*)(base + cap * 2 * sizeof(u64)), cap);
+	if (ret < 0)
+		goto out;
+	else
+		res = ret, ret = 0;
+
+	hyp_unpin_shared_mem(base, base + bytes);
+out:
+	cpu_reg(host_ctxt, 0) = ret;
+	cpu_reg(host_ctxt, 1) = res;
 }
 
 typedef void (*hcall_t)(struct kvm_cpu_context *);
@@ -1470,9 +1512,10 @@ static const hcall_t host_hcall[] = {
 	HANDLE_FUNC(__kvm_get_el2_trap_count),
 	HANDLE_FUNC(__kvm_clear_el2_trap_count),
 
-	HANDLE_FUNC(__pkvm_view_stage2_pt), //43
-	HANDLE_FUNC(__pkvm_stage2_pt_count), //44
-	HANDLE_FUNC(__pkvm_get_shadow_handles), //45
+	HANDLE_FUNC(__pkvm_view_stage2_pt),
+	HANDLE_FUNC(__pkvm_stage2_pt_count),
+	HANDLE_FUNC(__pkvm_get_shadow_handles),
+	HANDLE_FUNC(__pkvm_view_iopt),
 };
 
 static inline u64 kernel__text_addr(void)
