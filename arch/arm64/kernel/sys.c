@@ -28,7 +28,6 @@
 #include <kvm/arm_hypercalls.h>
 #include "linux/pkvm-rockchip-iommu.h"
 
-
 SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len, unsigned long,
 		prot, unsigned long, flags, unsigned long, fd, unsigned long,
 		off)
@@ -224,8 +223,6 @@ SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
 	return ret;
 }
 
-
-
 SYSCALL_DEFINE2(view_iopt, char __user *, device_name, u64 __user *, user_pool)
 {
 #define cap (1 << 15)
@@ -255,13 +252,13 @@ SYSCALL_DEFINE2(view_iopt, char __user *, device_name, u64 __user *, user_pool)
 	}
 
 	pool = kmalloc(cap * 3 * sizeof(u64), GFP_KERNEL);
-	if (!pool){
+	if (!pool) {
 		printk("view_iopt: kmalloc failed\n");
 		return -ENOMEM;
 	}
 
 	view_iopt_fn = symbol_get(rk_view_iopt);
-	if(!view_iopt_fn){
+	if (!view_iopt_fn) {
 		printk("view_iopt: cannot find rk_view_iopt, insmod iommu driver first\n");
 		kfree(pool);
 		return -EINVAL;
@@ -283,6 +280,19 @@ SYSCALL_DEFINE2(view_iopt, char __user *, device_name, u64 __user *, user_pool)
 	kfree(pool);
 	return ret;
 #undef cap
+}
+
+static int printk_devname(struct device *dev, void *data)
+{
+	printk("ls_dev: %s\n", dev_name(dev));
+	return 0;
+}
+
+SYSCALL_DEFINE0(ls_devices)
+{
+	printk("okay, ls_devices called\n");
+
+	return bus_for_each_dev(&platform_bus_type, NULL, NULL, printk_devname);
 }
 
 asmlinkage long sys_ni_syscall(void);
