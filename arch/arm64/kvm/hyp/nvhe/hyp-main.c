@@ -1436,7 +1436,7 @@ out:
 
 static void handle___pkvm_view_iopt(struct kvm_cpu_context *host_ctxt)
 {
-	DECLARE_REG(int, domain_id, host_ctxt, 1);
+	DECLARE_REG(unsigned int, domain_id, host_ctxt, 1);
 	DECLARE_REG(u64 *, pool_hva, host_ctxt, 2);
 	DECLARE_REG(u32, cap, host_ctxt, 3);
 
@@ -1445,15 +1445,17 @@ static void handle___pkvm_view_iopt(struct kvm_cpu_context *host_ctxt)
 	int ret, res = 0;
 
 	ret = hyp_pin_shared_mem(base, base + bytes);
-	if (ret)
+	if (ret) {
+		ret = -666;
 		goto out;
+	}
 
-	ret = __pkvm_view_iopt(domain_id, (u64*)(base + cap * 0 * sizeof(u64)),
-			       (u64*)(base + cap * 1 * sizeof(u64)),
-			       (u64*)(base + cap * 2 * sizeof(u64)), cap);
-	if (ret < 0)
+	ret = __pkvm_view_iopt(domain_id, (u64 *)(base + cap * 0 * sizeof(u64)),
+			       (u64 *)(base + cap * 1 * sizeof(u64)),
+			       (u64 *)(base + cap * 2 * sizeof(u64)), cap);
+	if (ret < 0) {
 		goto out;
-	else
+	} else
 		res = ret, ret = 0;
 
 	hyp_unpin_shared_mem(base, base + bytes);

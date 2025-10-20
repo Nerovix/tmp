@@ -15,12 +15,14 @@ static unsigned long dev_to_id(struct device *dev)
 int pkvm_iommu_driver_init(enum pkvm_iommu_driver_id id, void *data,
 			   size_t size)
 {
+	printk("Hypercall: pkvm_iommu_driver_init\n");
 	return kvm_call_hyp_nvhe(__pkvm_iommu_driver_init, id, data, size);
 }
 
 int pkvm_iommu_register(struct device *dev, enum pkvm_iommu_driver_id drv_id,
 			phys_addr_t pa, size_t size, struct device *parent)
 {
+	printk("Hypercall: pkvm_iommu_register\n");
 	void *mem;
 	int ret;
 
@@ -45,6 +47,7 @@ int pkvm_iommu_register(struct device *dev, enum pkvm_iommu_driver_id drv_id,
 
 int pkvm_iommu_suspend(struct device *dev)
 {
+	printk("Hypercall: pkvm_iommu_suspend, dev = %s\n", dev_name(dev));
 	return kvm_call_hyp_nvhe(__pkvm_iommu_pm_notify, dev_to_id(dev),
 				 PKVM_IOMMU_PM_SUSPEND);
 }
@@ -52,6 +55,7 @@ EXPORT_SYMBOL_GPL(pkvm_iommu_suspend);
 
 int pkvm_iommu_resume(struct device *dev)
 {
+	printk("Hypercall: pkvm_iommu_resume, dev = %s\n", dev_name(dev));
 	return kvm_call_hyp_nvhe(__pkvm_iommu_pm_notify, dev_to_id(dev),
 				 PKVM_IOMMU_PM_RESUME);
 }
@@ -59,30 +63,37 @@ EXPORT_SYMBOL_GPL(pkvm_iommu_resume);
 
 int pkvm_iommu_finalize(void)
 {
+	printk("Hypercall: pkvm_iommu_finalize\n");
 	return kvm_call_hyp_nvhe(__pkvm_iommu_finalize);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_finalize);
 
 int pkvm_iommu_alloc_domain(unsigned int domain_id, unsigned int type)
 {
+	printk("Hypercall: pkvm_iommu_alloc_domain, domain_id = %u\n",
+	       domain_id);
 	return kvm_call_hyp_nvhe(__pkvm_iommu_alloc_domain, domain_id, type);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_alloc_domain);
 
 int pkvm_iommu_free_domain(unsigned int domain_id)
 {
+	printk("Hypercall: pkvm_iommu_free_domain, domain_id = %u\n",
+	       domain_id);
 	return kvm_call_hyp_nvhe(__pkvm_iommu_free_domain, domain_id);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_free_domain);
 
 int pkvm_iommu_attach_dev(unsigned int iommu_id, unsigned int domain_id)
 {
+	printk("Hypercall: pkvm_iommu_attach_dev, domain_id = %u\n", domain_id);
 	return kvm_call_hyp_nvhe(__pkvm_iommu_attach_dev, iommu_id, domain_id);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_attach_dev);
 
 int pkvm_iommu_detach_dev(unsigned int iommu_id, unsigned int domain_id)
 {
+	printk("Hypercall: pkvm_iommu_detach_dev, domain_id = %u\n", domain_id);
 	return kvm_call_hyp_nvhe(__pkvm_iommu_detach_dev, iommu_id, domain_id);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_detach_dev);
@@ -90,6 +101,8 @@ EXPORT_SYMBOL_GPL(pkvm_iommu_detach_dev);
 int pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
 		   phys_addr_t paddr, size_t size, int prot)
 {
+	printk("Hypercall: pkvm_iommu_map, domain_id = %u, iova = 0x%lx, paddr = 0x%lx, size = %zu, prot = %d\n",
+	       domain_id, iova, paddr, size, prot);
 	return kvm_call_hyp_nvhe(__pkvm_iommu_map, domain_id, iova, paddr, size,
 				 prot);
 }
@@ -97,36 +110,50 @@ EXPORT_SYMBOL_GPL(pkvm_iommu_map);
 
 size_t pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova, size_t size)
 {
+	printk("Hypercall: pkvm_iommu_unmap, domain_id = %u\n", domain_id);
 	return kvm_call_hyp_nvhe(__pkvm_iommu_unmap, domain_id, iova, size);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_unmap);
 
 phys_addr_t pkvm_iommu_iova_to_phys(unsigned int domain_id, unsigned long iova)
 {
+	printk("Hypercall: pkvm_iommu_iova_to_phys, domain_id = %u\n",
+	       domain_id);
 	return kvm_call_hyp_nvhe(__pkvm_iommu_iova_to_phys, domain_id, iova);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_iova_to_phys);
 
 int pkvm_view_iopt(unsigned int domain_id, u64 *pool, int cap)
 {
-	return kvm_call_hyp_nvhe(__pkvm_view_iopt, domain_id, pool, cap);
+	printk("Hypercall: pkvm_view_iopt, domain_id = %u\n", domain_id);
+	struct arm_smccc_res res;
+	arm_smccc_hvc(
+		KVM_HOST_SMCCC_ID(__KVM_HOST_SMCCC_FUNC___pkvm_view_iopt),
+		domain_id, (unsigned long)pool, cap, 0, 0, 0, 0, &res);
+	
+	printk("Hypercall: pkvm_view_iopt, res.a0 = %lld, res.a1 = %lld\n",
+	       res.a0, res.a1);
+	return res.a1;
 }
 EXPORT_SYMBOL_GPL(pkvm_view_iopt);
 
 int pkvm_iommu_flush_iotlb_all(unsigned int iommu_id)
 {
+	printk("Hypercall: pkvm_iommu_flush_iotlb_all\n");
 	return kvm_call_hyp_nvhe(__pkvm_iommu_flush_iotlb_all, iommu_id);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_flush_iotlb_all);
 
 int pkvm_iommu_rk_enable(unsigned int iommu_id)
 {
+	printk("Hypercall: pkvm_iommu_rk_enable\n");
 	return kvm_call_hyp_nvhe(__pkvm_iommu_rk_enable, iommu_id);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_rk_enable);
 
 int pkvm_iommu_rk_disable(unsigned int iommu_id)
 {
+	printk("Hypercall: pkvm_iommu_rk_disable\n");
 	return kvm_call_hyp_nvhe(__pkvm_iommu_rk_disable, iommu_id);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_rk_disable);

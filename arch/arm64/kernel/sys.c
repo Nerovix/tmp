@@ -251,33 +251,95 @@ SYSCALL_DEFINE2(view_iopt, char __user *, device_name, u64 __user *, user_pool)
 		return -ENODEV;
 	}
 
-	pool = kmalloc(cap * 3 * sizeof(u64), GFP_KERNEL);
+	view_iopt_fn = symbol_get(rk_view_iopt);
+	if (!view_iopt_fn) {
+		printk("view_iopt: cannot find rk_view_iopt, insmod iommu driver first\n");
+		return -EINVAL;
+	}
+
+	unsigned long bytes;
+	if (check_mul_overflow((u64)cap, (u64)(3 * sizeof(u64)),
+			       (u64 *)&bytes)) {
+		printk("view_iopt: cap is too large!\n");
+		return -EINVAL;
+	}
+
+	pool = kmalloc(bytes, GFP_KERNEL);
 	if (!pool) {
 		printk("view_iopt: kmalloc failed\n");
 		return -ENOMEM;
 	}
 
-	view_iopt_fn = symbol_get(rk_view_iopt);
-	if (!view_iopt_fn) {
-		printk("view_iopt: cannot find rk_view_iopt, insmod iommu driver first\n");
+	unsigned long start = (unsigned long)pool;
+	unsigned long end = start + bytes;
+	unsigned long cur = start & PAGE_MASK;
+	u64 nr_pages = DIV_ROUND_UP(end - cur, PAGE_SIZE);
+	int i, j;
+
+	u64 *pfn_list = kmalloc(nr_pages * sizeof(u64), GFP_KERNEL);
+	if (!pfn_list) {
+		printk("view_iopt: kmalloc pfn_list failed\n");
 		kfree(pool);
-		return -EINVAL;
+		return -ENOMEM;
+	}
+
+	struct arm_smccc_res res;
+
+	for (i = 0; i < nr_pages; i++, cur += PAGE_SIZE) {
+		struct page *pg = is_vmalloc_addr((void *)cur) ?
+					  vmalloc_to_page((void *)cur) :
+					  virt_to_page((void *)cur);
+		pfn_list[i] = page_to_pfn(pg);
+		arm_smccc_hvc(
+			KVM_HOST_SMCCC_ID(
+				__KVM_HOST_SMCCC_FUNC___pkvm_host_share_hyp),
+			pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
+		if (res.a0) {
+			for (j = 0; j <= i; j++)
+				arm_smccc_hvc(
+					KVM_HOST_SMCCC_ID(
+						__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
+					pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
+			kfree(pfn_list);
+			kfree(pool);
+			printk("view_iopt: host_share_hyp failed\n");
+			return -EFAULT;
+		}
 	}
 
 	ret = view_iopt_fn(domain, pool, cap);
 	symbol_put(rk_view_iopt);
 	if (ret < 0) {
 		printk("view_iopt: hypercall view_iopt returned %d\n", ret);
+		for (j = 0; j < nr_pages; j++)
+			arm_smccc_hvc(
+				KVM_HOST_SMCCC_ID(
+					__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
+				pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
+		kfree(pfn_list);
 		kfree(pool);
 		return ret;
 	}
 
 	if (copy_to_user(user_pool, pool, cap * 3 * sizeof(u64))) {
 		printk("view_iopt: copy to user failed\n");
+		for (j = 0; j < nr_pages; j++)
+			arm_smccc_hvc(
+				KVM_HOST_SMCCC_ID(
+					__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
+				pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
+		kfree(pfn_list);
 		kfree(pool);
 		return -EFAULT;
 	}
+	for (j = 0; j < nr_pages; j++)
+		arm_smccc_hvc(
+			KVM_HOST_SMCCC_ID(
+				__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
+			pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
+	kfree(pfn_list);
 	kfree(pool);
+	printk("view_iopt: iopt walk succeeded\n");
 	return ret;
 #undef cap
 }

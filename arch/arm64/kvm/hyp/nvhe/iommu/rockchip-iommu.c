@@ -972,6 +972,9 @@ static int get_iopt(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
 	const int NUM = SPAGE_SIZE / sizeof(u32);
 	int cnt = 0;
 
+	if (domain_id >= RK_IOMMU_MAX_DOMAINS || !domains[domain_id] || !domains[domain_id]->dt)
+		return -ENODEV;
+
 	hyp_spin_lock(&domains[domain_id]->dt_lock);
 	for (dte_index = 0; dte_index < NUM; dte_index++) {
 		dte = domains[domain_id]->dt[dte_index];
@@ -982,17 +985,21 @@ static int get_iopt(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
 				pte = page_table[pte_index];
 				if (!rk_pte_is_page_valid(pte))
 					continue;
-				if (cnt >= cap)
-					return -ENOMEM;
-				ipas[cnt] = rk_dte_pte_to_iova(pte_index,
-							       pte_index);
-				pas[cnt] = rk_pte_page_address_v2(pte);
-				ptes[cnt] = pte;
-				pte++;
+				if (cnt >= cap) {
+					cnt++;
+				} else {
+					ipas[cnt] = rk_dte_pte_to_iova(
+						dte_index, pte_index);
+					pas[cnt] = rk_pte_page_address_v2(pte);
+					ptes[cnt] = pte;
+					cnt++;
+				}
 			}
 		}
 	}
-	return pte;
+
+	hyp_spin_unlock(&domains[domain_id]->dt_lock);
+	return cnt;
 }
 
 const struct pkvm_iommu_ops pkvm_rockchip_iommu_ops = (struct pkvm_iommu_ops){

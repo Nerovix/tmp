@@ -499,6 +499,7 @@ static struct iommu_ops rk_iommu_ops_v2 = {
 
 int rk_view_iopt(struct iommu_domain *domain, u64 *pool, int cap)
 {
+	printk("view_iopt: entering rk_view_iopt...\n");
 	if(domain->ops!= &rk_iommu_ops_v2)
 		return -ENODEV;
 	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);

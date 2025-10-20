@@ -588,7 +588,7 @@ int __pkvm_view_iopt(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
 		     int cap)
 {
 	struct pkvm_iommu *dev;
-	int ret = -ENOENT;
+	int ret = -111;
 
 	assert_host_component_locked();
 
@@ -596,8 +596,7 @@ int __pkvm_view_iopt(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
 		if (dev->ops->get_iopt) {
 			ret = dev->ops->get_iopt(domain_id, ipas, pas, ptes,
 						 cap);
-			if (ret >= 0)
-				return ret;
+			return ret;
 		}
 	}
 
