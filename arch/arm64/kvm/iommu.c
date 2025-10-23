@@ -101,9 +101,6 @@ int pkvm_iommu_detach_dev(unsigned int iommu_id, unsigned int domain_id)
 EXPORT_SYMBOL_GPL(pkvm_iommu_detach_dev);
 
 static unsigned int iommu_map_counter = 0;
-static unsigned int iommu_map_iova_min = 0;
-static unsigned int iommu_map_counter = 0;
-
 int pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
 		   phys_addr_t paddr, size_t size, int prot)
 {

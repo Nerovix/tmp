@@ -6,7 +6,10 @@
  * Author: Catalin Marinas <catalin.marinas@arm.com>
  */
 
+#include "linux/gfp.h"
 #include "linux/iommu.h"
+#include "linux/ip.h"
+#include "linux/module.h"
 #include "linux/platform_device.h"
 #include "linux/types.h"
 #include <linux/compiler.h>
@@ -47,15 +50,15 @@ SYSCALL_DEFINE1(arm64_personality, unsigned int, personality)
 	return ksys_personality(personality);
 }
 #ifdef u64
-	#define u64 unsigned long long
-#endif 
-
-#ifdef u32
-	#define u32 unsigned int
+#define u64 unsigned long long
 #endif
 
-SYSCALL_DEFINE4(view_stage2_pt, phys_addr_t, phys_l, phys_addr_t, phys_r, int, vm_handle,
-		u64 __user *, user_pool)
+#ifdef u32
+#define u32 unsigned int
+#endif
+
+SYSCALL_DEFINE4(view_stage2_pt, phys_addr_t, phys_l, phys_addr_t, phys_r, int,
+		vm_handle, u64 __user *, user_pool)
 {
 #define cap (1 << 15)
 	struct arm_smccc_res res;
@@ -73,13 +76,15 @@ SYSCALL_DEFINE4(view_stage2_pt, phys_addr_t, phys_l, phys_addr_t, phys_r, int, v
 	unsigned long end = start + bytes;
 	unsigned long cur = start & PAGE_MASK;
 	u64 nr_pages = DIV_ROUND_UP(end - cur, PAGE_SIZE);
-	u64 ret;
+	int ret = 0;
 
 	u64 *pfn_list = kmalloc(nr_pages * sizeof(u64), GFP_KERNEL);
 	if (!pfn_list) {
-		kfree(pool);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto free_pool;
 	}
+
+	int pages_to_unshare = 0;
 
 	for (i = 0; i < nr_pages; i++, cur += PAGE_SIZE) {
 		struct page *pg = is_vmalloc_addr((void *)cur) ?
@@ -91,47 +96,39 @@ SYSCALL_DEFINE4(view_stage2_pt, phys_addr_t, phys_l, phys_addr_t, phys_r, int, v
 				__KVM_HOST_SMCCC_FUNC___pkvm_host_share_hyp),
 			pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
 		if (res.a0) {
-			for (j = 0; j <= i; j++)
-				arm_smccc_hvc(
-					KVM_HOST_SMCCC_ID(
-						__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
-					pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
-			kfree(pfn_list);
-			kfree(pool);
-			return -EFAULT;
+			ret = -EFAULT;
+			goto out;
 		}
+		pages_to_unshare = i + 1;
 	}
 
 	arm_smccc_hvc(
 		KVM_HOST_SMCCC_ID(__KVM_HOST_SMCCC_FUNC___pkvm_view_stage2_pt),
-		(unsigned long)pool, cap, phys_l, phys_r, vm_handle, 0, 0, &res);
+		(unsigned long)pool, cap, phys_l, phys_r, vm_handle, 0, 0,
+		&res);
 
 	ret = res.a1;
 	printk("syscall_view_stage2_pt : res.a0 = %lld, res.a1 = %lld\n",
 	       res.a0, res.a1);
 
 	if (res.a0) {
-		for (j = 0; j < nr_pages; j++)
-			arm_smccc_hvc(
-				KVM_HOST_SMCCC_ID(
-					__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
-				pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
-		kfree(pfn_list);
-		kfree(pool);
-		return res.a0;
+		ret = res.a0;
+		goto out;
 	}
 
-	for (i = 0; i < nr_pages; i++) {
+	if (copy_to_user(user_pool, (u64 *)pool, cap * 4 * sizeof(u64))) {
+		ret = -EFAULT;
+		goto out;
+	}
+out:
+	for (i = 0; i < pages_to_unshare; i++) {
 		arm_smccc_hvc(
 			KVM_HOST_SMCCC_ID(
 				__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
 			pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
 	}
 	kfree(pfn_list);
-	if (copy_to_user(user_pool, (u64 *)pool, cap * 4 * sizeof(u64))) {
-		kfree(pool);
-		return -EFAULT;
-	}
+free_pool:
 	kfree(pool);
 	return ret;
 #undef cap
@@ -152,13 +149,15 @@ SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
 	u32 *pool;
 	u64 bytes;
 	size_t i, j;
+	int ret = 0;
 	u32 cap = 1 << 10;
 	if (check_mul_overflow(cap, (u32)sizeof(u32), (u32 *)&bytes))
 		return -EINVAL;
 	pool = kmalloc(bytes, GFP_KERNEL);
 
-	if (!pool)
+	if (!pool) {
 		return -ENOMEM;
+	}
 
 	unsigned long start = (unsigned long)pool;
 	unsigned long end = start + bytes;
@@ -168,10 +167,11 @@ SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
 
 	u64 *pfn_list = kmalloc(nr_pages * sizeof(u64), GFP_KERNEL);
 	if (!pfn_list) {
-		kfree(pool);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto free_pool;
 	}
 
+	int pages_to_unshare = 0;
 	for (i = 0; i < nr_pages; i++, cur += PAGE_SIZE) {
 		struct page *pg = is_vmalloc_addr((void *)cur) ?
 					  vmalloc_to_page((void *)cur) :
@@ -182,15 +182,10 @@ SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
 				__KVM_HOST_SMCCC_FUNC___pkvm_host_share_hyp),
 			pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
 		if (res.a0) {
-			for (j = 0; j <= i; j++)
-				arm_smccc_hvc(
-					KVM_HOST_SMCCC_ID(
-						__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
-					pfn_list[j], 0, 0, 0, 0, 0, 0, &res);
-			kfree(pfn_list);
-			kfree(pool);
-			return -EFAULT;
+			ret = -EFAULT;
+			goto out;
 		}
+		pages_to_unshare = i + 1;
 	}
 
 	arm_smccc_hvc(KVM_HOST_SMCCC_ID(
@@ -198,20 +193,18 @@ SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
 		      (unsigned long)pool, cap, 0, 0, 0, 0, 0, &res);
 	printk("syscall_get_shadow_handles : res.a0 = %lld, res.a1 = %lld\n",
 	       res.a0, res.a1);
-	long long ret = res.a1;
+	ret = res.a1;
 	if (res.a0) {
 		printk("syscall_get_shadow_handles error : res.a0 = %lld\n",
 		       res.a0);
-		for (i = 0; i < nr_pages; i++) {
-			arm_smccc_hvc(
-				KVM_HOST_SMCCC_ID(
-					__KVM_HOST_SMCCC_FUNC___pkvm_host_unshare_hyp),
-				pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
-		}
-		kfree(pfn_list);
-		kfree(pool);
-		return res.a0;
+		ret = res.a0;
+		goto out;
 	}
+	if (copy_to_user(shadow_handles, pool, ret * sizeof(u32))) {
+		ret = -EFAULT;
+		goto out;
+	}
+out:
 	for (i = 0; i < nr_pages; i++) {
 		arm_smccc_hvc(
 			KVM_HOST_SMCCC_ID(
@@ -219,41 +212,121 @@ SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
 			pfn_list[i], 0, 0, 0, 0, 0, 0, &res);
 	}
 	kfree(pfn_list);
-	if (copy_to_user(shadow_handles, pool, ret * sizeof(u32))) {
-		kfree(pool);
-		return -EFAULT;
-	}
+free_pool:
 	kfree(pool);
-	printk("syscall_get_shadow_handles returning %lld\n", ret);
+	printk("syscall get_shadow_handles returning %d\n", ret);
 	return ret;
 }
 
-SYSCALL_DEFINE4(view_iopt, char __user *, device_name, phys_addr_t, phys_l, phys_addr_t, phys_r, u64 __user *, user_pool)
+static int dev_count;
+static typeof(rk_iommu_domain_id_get) *rk_iommu_domain_id_fn;
+static int printk_devname(struct device *dev, void *data)
+{
+	struct iommu_domain *domain;
+	int domain_id;
+	domain = iommu_get_domain_for_dev(dev);
+	if (!domain)
+		return 0;
+	dev_count++;
+	printk("ls_dev: %s, ", dev_name(dev));
+	domain_id = rk_iommu_domain_id_fn(domain);
+	if (domain_id < 0) {
+		printk("not a rk_iommu_domain\n");
+	} else {
+		printk("domain_id = %d\n", domain_id);
+	}
+	return 0;
+}
+#define VDEV_MAX 50
+struct iommu_domain *domains[VDEV_MAX];
+static int domains_count = 0;
+SYSCALL_DEFINE0(ls_devices)
+{
+	int ret, i;
+	dev_count = 0;
+	rk_iommu_domain_id_fn = symbol_get(rk_iommu_domain_id_get);
+	if (!rk_iommu_domain_id_fn) {
+		printk("ls_devices: cannot find rk_iommu_domain_id_get, insmod iommu driver first\n");
+		return -EINVAL;
+	}
+	printk("ls_dev: all devices with an IOMMU domain:\n");
+	ret = bus_for_each_dev(&platform_bus_type, NULL, NULL, printk_devname);
+	if (ret) {
+		printk("ls_dev: bus_for_each_dev failed, ret = %d\n", ret);
+		return ret;
+	}
+
+	for (i = 0; i < VDEV_MAX; i++) {
+		if (domains[i]) {
+			printk("ls_dev: vdev_%d, domain_id = %d\n, virtual rk iommu domain",
+			       i, rk_iommu_domain_id_fn(domains[i]));
+			dev_count++;
+		}
+	}
+
+	printk("ls_dev: ls devices done, %d devices with an IOMMU domain are found.\n",
+	       dev_count);
+	symbol_put(rk_iommu_domain_id_get);
+	return 0;
+}
+
+int find_iommu_domain_by_dev_name(char *name, struct iommu_domain **out_domain)
+{
+	struct device *dev;
+	struct iommu_domain *domain;
+
+	dev = bus_find_device_by_name(&platform_bus_type, NULL, name);
+	if (!dev) {
+		char pre[6];
+		if (strlen(name) >= 6) {
+			strncpy(pre, name, 5);
+			pre[5] = '\0';
+			if (strcmp(pre, "vdev_") == 0) {
+				int vdev_id = 0, i;
+				for (i = 5; i < strlen(name); i++) {
+					vdev_id =
+						vdev_id * 10 + (name[i] - '0');
+				}
+				if (vdev_id >= 0 && vdev_id < VDEV_MAX) {
+					domain = domains[vdev_id];
+					goto found;
+				}
+				printk("view_iopt/iopt_map: invalid virtual device id %d\n", vdev_id);
+				return -ENODEV;
+			}
+		}
+		printk("view_iopt/iopt_map: cannot find device %s\n", name);
+		return -ENODEV;
+	} else {
+		domain = iommu_get_domain_for_dev(dev);
+	}
+found:
+	if (!domain) {
+		printk("view_iopt: device %s has no iommu domain\n", name);
+		return -ENODEV;
+	}
+	*out_domain = domain;
+	return 0;
+}
+
+SYSCALL_DEFINE4(view_iopt, char __user *, device_name, phys_addr_t, phys_l,
+		phys_addr_t, phys_r, u64 __user *, user_pool)
 {
 #define cap (1 << 15)
 	char name[100];
 	u64 *pool;
 	int ret = 0;
-	struct device *dev;
 	struct iommu_domain *domain;
 	typeof(rk_view_iopt) *view_iopt_fn;
 
 	ret = strncpy_from_user_nofault(name, device_name, 100);
 	if (ret < 0) {
-		printk("view_iopt: copy from user failed\n");
+		printk("view_iopt/iopt_map: copy from user failed\n");
 		return -EFAULT;
 	}
 
-	dev = bus_find_device_by_name(&platform_bus_type, NULL, name);
-	if (!dev) {
-		printk("view_iopt: cannot find device %s\n", name);
-		return -ENODEV;
-	}
-
-	domain = iommu_get_domain_for_dev(dev);
-	if (!domain) {
-		printk("view_iopt: device %s has no iommu domain\n", name);
-		return -ENODEV;
+	if ((ret = find_iommu_domain_by_dev_name(name, &domain))) {
+		return ret;
 	}
 
 	view_iopt_fn = symbol_get(rk_view_iopt);
@@ -349,18 +422,49 @@ SYSCALL_DEFINE4(view_iopt, char __user *, device_name, phys_addr_t, phys_l, phys
 #undef cap
 }
 
-static int printk_devname(struct device *dev, void *data)
+/*
+ * Allocate a new dummy rk_iommu domain and store it in domains[].
+ */
+SYSCALL_DEFINE0(alloc_domain)
 {
-	printk("ls_dev: %s\n", dev_name(dev));
+	if (domains_count >= VDEV_MAX) {
+		printk("alloc_domain: maximum number of virtual rk_iommu domains reached\n");
+		return -ENOMEM;
+	}
+
+	typeof(rk_virtual_iommu_domain_alloc) *domain_alloc_fn;
+	domain_alloc_fn = symbol_get(rk_virtual_iommu_domain_alloc);
+	if (!domain_alloc_fn) {
+		printk("alloc_domain: cannot find rk_virtual_iommu_domain_alloc, insmod iommu driver first\n");
+		return -EINVAL;
+	}
+	domains[domains_count++] = domain_alloc_fn();
+	symbol_put(domain_alloc_fn);
+	printk("alloc_domain: created virtual rk_iommu domain vdev_%d\n",
+	       domains_count - 1);
 	return 0;
 }
 
-SYSCALL_DEFINE0(ls_devices)
+SYSCALL_DEFINE3(iopt_map,char __user *, device_name, unsigned long, iova, phys_addr_t, pa)
 {
-	printk("okay, ls_devices called\n");
+	char name[100];
+	int ret = 0;
+	struct iommu_domain *domain;
 
-	return bus_for_each_dev(&platform_bus_type, NULL, NULL, printk_devname);
+	ret = strncpy_from_user_nofault(name, device_name, 100);
+	if (ret < 0) {
+		printk("iopt_map: copy from user failed\n");
+		return -EFAULT;
+	}
+	if ((ret = find_iommu_domain_by_dev_name(name, &domain))) {
+		return ret;
+	}
+	
+	ret = rk_iopt_map(domain, iova, pa, PAGE_SIZE, IOMMU_READ | IOMMU_WRITE );
+	printk("iopt_map: rk_iopt_map returned %d\n", ret);
+	return ret;	
 }
+
 
 asmlinkage long sys_ni_syscall(void);
 

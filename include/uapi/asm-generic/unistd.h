@@ -869,9 +869,13 @@ __SYSCALL(__NR_get_shadow_handles, sys_get_shadow_handles)
 __SYSCALL(__NR_view_iopt, sys_view_iopt)
 #define __NR_ls_devices 445
 __SYSCALL(__NR_ls_devices, sys_ls_devices)
+#define __NR_alloc_domain 446
+__SYSCALL(__NR_alloc_domain, sys_alloc_domain)
+#define __NR_iopt_map 447
+__SYSCALL(__NR_iopt_map, sys_iopt_map)
 
 #undef __NR_syscalls
-#define __NR_syscalls 446
+#define __NR_syscalls 448
 
 /*
  * 32 bit systems traditionally used different

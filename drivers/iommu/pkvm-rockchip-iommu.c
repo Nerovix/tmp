@@ -6,6 +6,7 @@
  *			Daniel Kurtz <djkurtz@chromium.org>
  */
 
+#include "linux/types.h"
 #include <linux/clk.h>
 #include <linux/compiler.h>
 #include <linux/delay.h>
@@ -396,6 +397,12 @@ err_free_domain:
 	return NULL;
 }
 
+struct iommu_domain *rk_virtual_iommu_domain_alloc(void)
+{
+	return rk_iommu_domain_alloc(IOMMU_DOMAIN_UNMANAGED);
+}
+EXPORT_SYMBOL_GPL(rk_virtual_iommu_domain_alloc);
+
 static void rk_iommu_domain_free_v2(struct iommu_domain *domain)
 {
 	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
@@ -498,6 +505,29 @@ static struct iommu_ops rk_iommu_ops_v2 = {
 	.pgsize_bitmap = RK_IOMMU_PGSIZE_BITMAP,
 	.of_xlate = rk_iommu_of_xlate,
 };
+
+int rk_iommu_domain_id_get(struct iommu_domain *dom)
+{
+	struct rk_iommu_domain *rk_domain;
+	if (dom && dom->ops == &rk_iommu_ops_v2) {
+		rk_domain = to_rk_domain(dom);
+		return rk_domain->id;
+	}
+	return -ENODEV;
+}
+EXPORT_SYMBOL_GPL(rk_iommu_domain_id_get);
+
+
+int rk_iopt_map(struct iommu_domain *domain, unsigned long iova, phys_addr_t pa,
+		size_t size, int prot)
+{
+	if(!domain||domain->ops!=&rk_iommu_ops_v2){
+		printk("rk_iopt_map: invalid iommu domain\n");
+		return -EINVAL;
+	}
+	return rk_iommu_map_v2(domain, iova, pa, size, prot, 0);
+}
+EXPORT_SYMBOL_GPL(rk_iopt_map);
 
 int rk_view_iopt(struct iommu_domain *domain, u64 *pool, int cap,
 		 phys_addr_t phys_l, phys_addr_t phys_r)
