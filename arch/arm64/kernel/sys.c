@@ -8,6 +8,7 @@
 
 #include "linux/iommu.h"
 #include "linux/platform_device.h"
+#include "linux/types.h"
 #include <linux/compiler.h>
 #include <linux/device/bus.h>
 #include <linux/errno.h>
@@ -45,11 +46,15 @@ SYSCALL_DEFINE1(arm64_personality, unsigned int, personality)
 		return -EINVAL;
 	return ksys_personality(personality);
 }
+#ifdef u64
+	#define u64 unsigned long long
+#endif 
 
-#define u64 unsigned long long
-#define u32 unsigned int
+#ifdef u32
+	#define u32 unsigned int
+#endif
 
-SYSCALL_DEFINE4(view_stage2_pt, u64, ipa_l, u64, ipa_r, int, vm_handle,
+SYSCALL_DEFINE4(view_stage2_pt, phys_addr_t, phys_l, phys_addr_t, phys_r, int, vm_handle,
 		u64 __user *, user_pool)
 {
 #define cap (1 << 15)
@@ -68,7 +73,7 @@ SYSCALL_DEFINE4(view_stage2_pt, u64, ipa_l, u64, ipa_r, int, vm_handle,
 	unsigned long end = start + bytes;
 	unsigned long cur = start & PAGE_MASK;
 	u64 nr_pages = DIV_ROUND_UP(end - cur, PAGE_SIZE);
-	u64 ans;
+	u64 ret;
 
 	u64 *pfn_list = kmalloc(nr_pages * sizeof(u64), GFP_KERNEL);
 	if (!pfn_list) {
@@ -99,9 +104,9 @@ SYSCALL_DEFINE4(view_stage2_pt, u64, ipa_l, u64, ipa_r, int, vm_handle,
 
 	arm_smccc_hvc(
 		KVM_HOST_SMCCC_ID(__KVM_HOST_SMCCC_FUNC___pkvm_view_stage2_pt),
-		(unsigned long)pool, cap, ipa_l, ipa_r, vm_handle, 0, 0, &res);
+		(unsigned long)pool, cap, phys_l, phys_r, vm_handle, 0, 0, &res);
 
-	ans = res.a1;
+	ret = res.a1;
 	printk("syscall_view_stage2_pt : res.a0 = %lld, res.a1 = %lld\n",
 	       res.a0, res.a1);
 
@@ -128,7 +133,7 @@ SYSCALL_DEFINE4(view_stage2_pt, u64, ipa_l, u64, ipa_r, int, vm_handle,
 		return -EFAULT;
 	}
 	kfree(pool);
-	return ans;
+	return ret;
 #undef cap
 }
 
@@ -223,7 +228,7 @@ SYSCALL_DEFINE1(get_shadow_handles, unsigned int __user *, shadow_handles)
 	return ret;
 }
 
-SYSCALL_DEFINE2(view_iopt, char __user *, device_name, u64 __user *, user_pool)
+SYSCALL_DEFINE4(view_iopt, char __user *, device_name, phys_addr_t, phys_l, phys_addr_t, phys_r, u64 __user *, user_pool)
 {
 #define cap (1 << 15)
 	char name[100];
@@ -307,7 +312,7 @@ SYSCALL_DEFINE2(view_iopt, char __user *, device_name, u64 __user *, user_pool)
 		}
 	}
 
-	ret = view_iopt_fn(domain, pool, cap);
+	ret = view_iopt_fn(domain, pool, cap, phys_l, phys_r);
 	symbol_put(rk_view_iopt);
 	if (ret < 0) {
 		printk("view_iopt: hypercall view_iopt returned %d\n", ret);

@@ -962,17 +962,18 @@ static int get_all_domain_ids(unsigned int *domain_ids)
 	return domains_count;
 }
 
-static int get_iopt(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
-		    int cap)
+static int get_iopt(unsigned int domain_id, u64 *iovas, u64 *pas, u64 *ptes,
+		    int cap, phys_addr_t phys_l, phys_addr_t phys_r)
 {
-	phys_addr_t pt_phys, phys = 0;
+	phys_addr_t pt_phys, phys;
 	u32 dte, pte;
 	u32 *page_table;
 	size_t dte_index, pte_index;
 	const int NUM = SPAGE_SIZE / sizeof(u32);
 	int cnt = 0;
 
-	if (domain_id >= RK_IOMMU_MAX_DOMAINS || !domains[domain_id] || !domains[domain_id]->dt)
+	if (domain_id >= RK_IOMMU_MAX_DOMAINS || !domains[domain_id] ||
+	    !domains[domain_id]->dt)
 		return -ENODEV;
 
 	hyp_spin_lock(&domains[domain_id]->dt_lock);
@@ -985,15 +986,18 @@ static int get_iopt(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
 				pte = page_table[pte_index];
 				if (!rk_pte_is_page_valid(pte))
 					continue;
-				if (cnt >= cap) {
-					cnt++;
-				} else {
-					ipas[cnt] = rk_dte_pte_to_iova(
-						dte_index, pte_index);
-					pas[cnt] = rk_pte_page_address_v2(pte);
-					ptes[cnt] = pte;
-					cnt++;
-				}
+				phys= rk_pte_page_address_v2(pte);
+				if(phys_l<=phys && phys<phys_r) {
+					if (cnt >= cap) {
+						cnt++;
+					} else {
+						iovas[cnt] = rk_dte_pte_to_iova(
+							dte_index, pte_index);
+						pas[cnt] = rk_pte_page_address_v2(pte);
+						ptes[cnt] = pte;
+						cnt++;
+					}
+				} 
 			}
 		}
 	}

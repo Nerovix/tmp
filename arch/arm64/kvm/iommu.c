@@ -5,6 +5,8 @@
  */
 
 #include <linux/kvm_host.h>
+#include <linux/atomic.h>
+#include <linux/spinlock.h>
 
 static unsigned long dev_to_id(struct device *dev)
 {
@@ -98,11 +100,21 @@ int pkvm_iommu_detach_dev(unsigned int iommu_id, unsigned int domain_id)
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_detach_dev);
 
+static unsigned int iommu_map_counter = 0;
+static unsigned int iommu_map_iova_min = 0;
+static unsigned int iommu_map_counter = 0;
+
 int pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
 		   phys_addr_t paddr, size_t size, int prot)
 {
 	printk("Hypercall: pkvm_iommu_map, domain_id = %u, iova = 0x%lx, paddr = 0x%lx, size = %zu, prot = %d\n",
 	       domain_id, iova, paddr, size, prot);
+
+	unsigned int t;
+	do {
+		t = READ_ONCE(iommu_map_counter);
+	} while (cmpxchg(&iommu_map_counter, t, t + 1) != t);
+
 	return kvm_call_hyp_nvhe(__pkvm_iommu_map, domain_id, iova, paddr, size,
 				 prot);
 }
@@ -123,16 +135,15 @@ phys_addr_t pkvm_iommu_iova_to_phys(unsigned int domain_id, unsigned long iova)
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_iova_to_phys);
 
-int pkvm_view_iopt(unsigned int domain_id, u64 *pool, int cap)
+int pkvm_view_iopt(unsigned int domain_id, u64 *pool, int cap, phys_addr_t phys_l, phys_addr_t phys_r)
 {
-	printk("Hypercall: pkvm_view_iopt, domain_id = %u\n", domain_id);
 	struct arm_smccc_res res;
-	arm_smccc_hvc(
-		KVM_HOST_SMCCC_ID(__KVM_HOST_SMCCC_FUNC___pkvm_view_iopt),
-		domain_id, (unsigned long)pool, cap, 0, 0, 0, 0, &res);
-	
-	printk("Hypercall: pkvm_view_iopt, res.a0 = %lld, res.a1 = %lld\n",
-	       res.a0, res.a1);
+	printk("Hypercall: pkvm_view_iopt, domain_id = %u\n", domain_id);
+	arm_smccc_hvc(KVM_HOST_SMCCC_ID(__KVM_HOST_SMCCC_FUNC___pkvm_view_iopt),
+		      domain_id, (unsigned long)pool, cap, phys_l, phys_r, 0, 0, &res);
+
+	printk("Hypercall: pkvm_view_iopt, res.a0 = %lld, res.a1 = %lld, BTW iommu_map_counter = %u\n",
+	       res.a0, res.a1, READ_ONCE(iommu_map_counter));
 	return res.a1;
 }
 EXPORT_SYMBOL_GPL(pkvm_view_iopt);

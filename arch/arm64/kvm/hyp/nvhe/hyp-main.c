@@ -8,6 +8,7 @@
 #include "linux/cpu.h"
 #include "linux/mm.h"
 #include "linux/spinlock.h"
+#include "linux/types.h"
 #include "linux/usb.h"
 #include "nvhe/spinlock.h"
 #include <kvm/arm_hypercalls.h>
@@ -1227,7 +1228,8 @@ struct stage2_collect_ctx {
 	u64 *pte;
 	u64 cap;
 	u64 cnt;
-	u64 vmcnt;
+	phys_addr_t phys_l;
+	phys_addr_t phys_r;
 };
 
 static int stage2_collect_cb(u64 addr, u64 end, u32 level,
@@ -1235,40 +1237,36 @@ static int stage2_collect_cb(u64 addr, u64 end, u32 level,
 			     enum kvm_pgtable_walk_flags flag, void *const arg)
 {
 	struct stage2_collect_ctx *ctx = arg;
+	phys_addr_t phys;
 	kvm_pte_t pte = READ_ONCE(*ptep);
-
 	if (!kvm_pte_valid(pte))
 		return 0;
 
-	if (ctx->cnt >= ctx->cap) {
-		return 0;
+	phys = kvm_pgtable_stage2_pte_phys(pte);
+	if (ctx->phys_l <= phys && phys < ctx->phys_r) {
+		if (ctx->cnt >= ctx->cap) {
+			ctx->cnt++;
+		} else {
+			ctx->ipa[ctx->cnt] = addr;
+			ctx->pa[ctx->cnt] = phys;
+			ctx->level[ctx->cnt] = level;
+			ctx->pte[ctx->cnt] = pte;
+			ctx->cnt++;
+		}
 	}
-	ctx->ipa[ctx->cnt] = addr;
-	ctx->pa[ctx->cnt] = kvm_pgtable_stage2_pte_phys(pte);
-	ctx->level[ctx->cnt] = level;
-	ctx->pte[ctx->cnt] = pte;
-	ctx->cnt++;
 	return 0;
 }
 
-static int flag = 0;
 static int pt_walk_collect(struct kvm_pgtable *pgt,
-			   struct stage2_collect_ctx *ctx,
-			   struct kvm_pgtable_walker walker, u64 l, u64 r)
+			   struct kvm_pgtable_walker walker, u64 gpa_l,
+			   u64 gpa_r)
 {
 	// make sure lock is held
 	int ret;
-	// u64 before, after;
-	// before = ctx->cnt;
 	if (!pgt)
 		return -EFAULT;
-	// ret = kvm_pgtable_walk(pgt, l, r - l, &walker);
-	ret = kvm_pgtable_walk(pgt, 0, (1ULL << pgt->ia_bits), &walker);
-	if (ret)
+	if ((ret = kvm_pgtable_walk(pgt, gpa_l, gpa_r - gpa_l, &walker)))
 		return ret;
-	flag++;
-	// after = ctx->cnt;
-	// ctx->meta[ctx->vmcnt++] = after - before;
 	return 0;
 }
 
@@ -1283,7 +1281,6 @@ static void handle___pkvm_view_stage2_pt(struct kvm_cpu_context *host_ctxt)
 	u8 *base = kern_hyp_va(pool_hva);
 	size_t bytes = cap * 4 * sizeof(u64);
 	int ret = 0;
-	flag = 0;
 	ret = hyp_pin_shared_mem(base, base + bytes);
 	if (ret)
 		goto out;
@@ -1295,7 +1292,8 @@ static void handle___pkvm_view_stage2_pt(struct kvm_cpu_context *host_ctxt)
 		.pte = (u64 *)(base + cap * 3 * sizeof(u64)),
 		.cap = cap,
 		.cnt = 0,
-		.vmcnt = 0,
+		.phys_l = l,
+		.phys_r = r,
 	};
 
 	struct kvm_pgtable_walker walker = {
@@ -1308,19 +1306,19 @@ static void handle___pkvm_view_stage2_pt(struct kvm_cpu_context *host_ctxt)
 		hyp_spin_lock(&host_kvm.lock);
 		struct kvm_pgtable *pgt = &host_kvm.pgt;
 
-		ret = pt_walk_collect(pgt, &ctx, walker, l, r);
+		ret = pt_walk_collect(pgt, walker, 0, 1ull << pgt->ia_bits);
 		hyp_spin_unlock(&host_kvm.lock);
 	} else {
 		get_shadow_lock();
 		struct kvm_shadow_vm *vm = pkvm_shadow_table_get(vm_handle);
-		put_shadow_lock();
-		hyp_spin_lock(&vm->lock);
 		if (!vm) {
 			ret = -EINVAL;
 			goto unpin;
 		}
+		put_shadow_lock();
+		hyp_spin_lock(&vm->lock);
 		struct kvm_pgtable *pgt = &vm->pgt;
-		ret = pt_walk_collect(pgt, &ctx, walker, l, r);
+		ret = pt_walk_collect(pgt, walker, 0, 1ull << pgt->ia_bits);
 		hyp_spin_unlock(&vm->lock);
 	}
 
@@ -1439,6 +1437,8 @@ static void handle___pkvm_view_iopt(struct kvm_cpu_context *host_ctxt)
 	DECLARE_REG(unsigned int, domain_id, host_ctxt, 1);
 	DECLARE_REG(u64 *, pool_hva, host_ctxt, 2);
 	DECLARE_REG(u32, cap, host_ctxt, 3);
+	DECLARE_REG(phys_addr_t, phys_l, host_ctxt, 4);
+	DECLARE_REG(phys_addr_t, phys_r, host_ctxt, 5);
 
 	u8 *base = kern_hyp_va((void *)pool_hva);
 	size_t bytes = cap * sizeof(u64) * 3;
@@ -1446,13 +1446,13 @@ static void handle___pkvm_view_iopt(struct kvm_cpu_context *host_ctxt)
 
 	ret = hyp_pin_shared_mem(base, base + bytes);
 	if (ret) {
-		ret = -666;
 		goto out;
 	}
 
 	ret = __pkvm_view_iopt(domain_id, (u64 *)(base + cap * 0 * sizeof(u64)),
 			       (u64 *)(base + cap * 1 * sizeof(u64)),
-			       (u64 *)(base + cap * 2 * sizeof(u64)), cap);
+			       (u64 *)(base + cap * 2 * sizeof(u64)), cap,
+			       phys_l, phys_r);
 	if (ret < 0) {
 		goto out;
 	} else

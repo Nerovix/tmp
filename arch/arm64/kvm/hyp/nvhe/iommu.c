@@ -4,6 +4,7 @@
  * Author: David Brazdil <dbrazdil@google.com>
  */
 
+#include "linux/types.h"
 #include <linux/kvm_host.h>
 
 #include <asm/kvm_asm.h>
@@ -584,18 +585,18 @@ phys_addr_t __pkvm_iommu_iova_to_phys(unsigned int domain_id,
 	return ret;
 }
 
-int __pkvm_view_iopt(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
-		     int cap)
+int __pkvm_view_iopt(unsigned int domain_id, u64 *iovas, u64 *pas, u64 *ptes,
+		     int cap, phys_addr_t phys_l, phys_addr_t phys_r)
 {
 	struct pkvm_iommu *dev;
-	int ret = -111;
+	int ret = -ENOENT;
 
 	assert_host_component_locked();
 
 	list_for_each_entry (dev, &iommu_list, list) {
 		if (dev->ops->get_iopt) {
-			ret = dev->ops->get_iopt(domain_id, ipas, pas, ptes,
-						 cap);
+			ret = dev->ops->get_iopt(domain_id, iovas, pas, ptes,
+						 cap, phys_l, phys_r);
 			return ret;
 		}
 	}

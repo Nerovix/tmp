@@ -84,8 +84,8 @@ struct pkvm_iommu_ops {
 
 	int (*get_all_domain_ids)(unsigned int *pool);
 
-	int (*get_iopt)(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
-			int cap);
+	int (*get_iopt)(unsigned int domain_id, u64 *iova, u64 *pas, u64 *ptes,
+			int cap, phys_addr_t phys_l, phys_addr_t phys_r);
 
 	/* Amount of memory allocated per-device for use by the driver. */
 	size_t data_size;
@@ -137,7 +137,7 @@ void pkvm_iommu_host_stage2_idmap(phys_addr_t start, phys_addr_t end,
 				  enum kvm_pgtable_prot prot);
 
 int __pkvm_view_iopt(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
-		   int cap);
+		     int cap, phys_addr_t phys_l, phys_addr_t phys_r);
 
 extern const struct pkvm_iommu_ops pkvm_s2mpu_ops;
 extern const struct pkvm_iommu_ops pkvm_sysmmu_sync_ops;

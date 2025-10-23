@@ -35,7 +35,7 @@
 
 #include <asm/kvm_rockchip_iommu.h>
 
- /*
+/*
   * Support mapping any size that fits in one page table:
   *   4 KiB to 4 MiB
   */
@@ -130,16 +130,18 @@ static phys_addr_t rk_iommu_iova_to_phys_v2(struct iommu_domain *domain,
 }
 
 static int rk_iommu_map_v2(struct iommu_domain *domain, unsigned long _iova,
-			phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
+			   phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
 {
 	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
 	dma_addr_t iova = (dma_addr_t)_iova;
 
-	return pkvm_iommu_map(rk_domain->id, (unsigned long)iova, paddr, size, prot);
+	return pkvm_iommu_map(rk_domain->id, (unsigned long)iova, paddr, size,
+			      prot);
 }
 
-static size_t rk_iommu_unmap_v2(struct iommu_domain *domain, unsigned long _iova,
-				size_t size, struct iommu_iotlb_gather *gather)
+static size_t rk_iommu_unmap_v2(struct iommu_domain *domain,
+				unsigned long _iova, size_t size,
+				struct iommu_iotlb_gather *gather)
 {
 	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
 	dma_addr_t iova = (dma_addr_t)_iova;
@@ -155,7 +157,7 @@ static void rk_iommu_flush_tlb_all(struct iommu_domain *domain)
 	int i;
 
 	spin_lock_irqsave(&rk_domain->iommus_lock, flags);
-	list_for_each(pos, &rk_domain->iommus) {
+	list_for_each (pos, &rk_domain->iommus) {
 		struct rk_iommu *iommu;
 		int ret;
 
@@ -165,7 +167,8 @@ static void rk_iommu_flush_tlb_all(struct iommu_domain *domain)
 		if (WARN_ON_ONCE(ret < 0))
 			continue;
 		if (ret) {
-			WARN_ON(clk_bulk_enable(iommu->num_clocks, iommu->clocks));
+			WARN_ON(clk_bulk_enable(iommu->num_clocks,
+						iommu->clocks));
 			pkvm_iommu_flush_iotlb_all(iommu->id);
 			clk_bulk_disable(iommu->num_clocks, iommu->clocks);
 			pm_runtime_put(iommu->dev);
@@ -283,7 +286,7 @@ static void rk_iommu_detach_device(struct iommu_domain *domain,
 }
 
 static int rk_iommu_attach_device(struct iommu_domain *domain,
-		struct device *dev)
+				  struct device *dev)
 {
 	struct rk_iommu *iommu;
 	struct rk_iommu *cur_iommu;
@@ -313,7 +316,7 @@ static int rk_iommu_attach_device(struct iommu_domain *domain,
 	spin_lock_irqsave(&rk_domain->iommus_lock, flags);
 
 	/* Check for duplicate iommu in domain. */
-	list_for_each_entry(cur_iommu, &rk_domain->iommus, node) {
+	list_for_each_entry (cur_iommu, &rk_domain->iommus, node) {
 		if (cur_iommu == iommu) {
 			skip_attach = true;
 			break;
@@ -368,7 +371,8 @@ static struct iommu_domain *rk_iommu_domain_alloc(unsigned type)
 	    iommu_get_dma_cookie(&rk_domain->domain))
 		goto err_free_domain;
 
-	rk_domain->id = ida_alloc_range(&rk_iommu_domain_ida, 0, RK_IOMMU_MAX_DOMAINS - 1, GFP_KERNEL);
+	rk_domain->id = ida_alloc_range(&rk_iommu_domain_ida, 0,
+					RK_IOMMU_MAX_DOMAINS - 1, GFP_KERNEL);
 
 	ret = pkvm_iommu_alloc_domain(rk_domain->id, 0);
 	if (ret)
@@ -378,7 +382,7 @@ static struct iommu_domain *rk_iommu_domain_alloc(unsigned type)
 	INIT_LIST_HEAD(&rk_domain->iommus);
 
 	rk_domain->domain.geometry.aperture_start = 0;
-	rk_domain->domain.geometry.aperture_end   = DMA_BIT_MASK(32);
+	rk_domain->domain.geometry.aperture_end = DMA_BIT_MASK(32);
 	rk_domain->domain.geometry.force_aperture = true;
 
 	return &rk_domain->domain;
@@ -455,8 +459,7 @@ static bool rk_iommu_is_attach_deferred(struct iommu_domain *domain,
 	return data->defer_attach;
 }
 
-static int rk_iommu_of_xlate(struct device *dev,
-			     struct of_phandle_args *args)
+static int rk_iommu_of_xlate(struct device *dev, struct of_phandle_args *args)
 {
 	struct platform_device *iommu_dev;
 	struct rk_iommudata *data;
@@ -496,17 +499,16 @@ static struct iommu_ops rk_iommu_ops_v2 = {
 	.of_xlate = rk_iommu_of_xlate,
 };
 
-
-int rk_view_iopt(struct iommu_domain *domain, u64 *pool, int cap)
+int rk_view_iopt(struct iommu_domain *domain, u64 *pool, int cap,
+		 phys_addr_t phys_l, phys_addr_t phys_r)
 {
-	printk("view_iopt: entering rk_view_iopt...\n");
-	if(domain->ops!= &rk_iommu_ops_v2)
-		return -ENODEV;
 	struct rk_iommu_domain *rk_domain = to_rk_domain(domain);
-	return pkvm_view_iopt(rk_domain->id, pool, cap);
+	printk("view_iopt: entering rk_view_iopt...\n");
+	if (domain->ops != &rk_iommu_ops_v2)
+		return -ENODEV;
+	return pkvm_view_iopt(rk_domain->id, pool, cap, phys_l, phys_r);
 }
 EXPORT_SYMBOL_GPL(rk_view_iopt);
-
 
 static const struct rockchip_iommu_data iommu_data_v2 = {
 	.version = 0x2,
@@ -547,8 +549,8 @@ static int rk_iommu_probe(struct platform_device *pdev)
 	iommu->dev = dev;
 	iommu->num_mmu = 0;
 
-	iommu->bases = devm_kcalloc(dev, num_res, sizeof(*iommu->bases),
-				    GFP_KERNEL);
+	iommu->bases =
+		devm_kcalloc(dev, num_res, sizeof(*iommu->bases), GFP_KERNEL);
 	if (!iommu->bases)
 		return -ENOMEM;
 
@@ -568,14 +570,14 @@ static int rk_iommu_probe(struct platform_device *pdev)
 	if (iommu->num_irq < 0)
 		return iommu->num_irq;
 
-	iommu->skip_read = device_property_read_bool(dev,
-					"rockchip,skip-mmu-read");
-	iommu->dlr_disable = device_property_read_bool(dev,
-					"rockchip,disable-device-link-resume");
-	iommu->shootdown_entire = device_property_read_bool(dev,
-					"rockchip,shootdown-entire");
-	iommu->master_handle_irq = device_property_read_bool(dev,
-					"rockchip,master-handle-irq");
+	iommu->skip_read =
+		device_property_read_bool(dev, "rockchip,skip-mmu-read");
+	iommu->dlr_disable = device_property_read_bool(
+		dev, "rockchip,disable-device-link-resume");
+	iommu->shootdown_entire =
+		device_property_read_bool(dev, "rockchip,shootdown-entire");
+	iommu->master_handle_irq =
+		device_property_read_bool(dev, "rockchip,master-handle-irq");
 
 	/*
 	 * iommu clocks should be present for all new devices and devicetrees
@@ -642,7 +644,8 @@ static int rk_iommu_probe(struct platform_device *pdev)
 
 	/* Allocate a page for driver data. */
 	BUILD_BUG_ON(sizeof(*info) > PAGE_SIZE);
-	info = (struct hyp_rk_iommu_info *)__get_free_page(GFP_ATOMIC | GFP_DMA32);
+	info = (struct hyp_rk_iommu_info *)__get_free_page(GFP_ATOMIC |
+							   GFP_DMA32);
 	if (!info) {
 		err = -ENOMEM;
 		goto err_unregister_group;
@@ -651,7 +654,8 @@ static int rk_iommu_probe(struct platform_device *pdev)
 	spin_lock_init(&iommu->domains_lock);
 	INIT_LIST_HEAD(&iommu->domains);
 
-	iommu->id = ida_alloc_range(&rk_iommu_ida, 0, RK_IOMMU_MAX_IOMMUS - 1, GFP_KERNEL);
+	iommu->id = ida_alloc_range(&rk_iommu_ida, 0, RK_IOMMU_MAX_IOMMUS - 1,
+				    GFP_KERNEL);
 	info->iommu_id = iommu->id;
 	info->iommu_skip_read = iommu->skip_read;
 	info->iommu_shootdown_entire = iommu->shootdown_entire;
@@ -695,7 +699,6 @@ static int __maybe_unused rk_iommu_suspend(struct device *dev)
 {
 	struct rk_iommu *iommu = dev_get_drvdata(dev);
 
-
 	if (iommu->dlr_disable)
 		return 0;
 
@@ -715,8 +718,8 @@ static int __maybe_unused rk_iommu_resume(struct device *dev)
 
 static const struct dev_pm_ops rk_iommu_pm_ops = {
 	SET_RUNTIME_PM_OPS(rk_iommu_suspend, rk_iommu_resume, NULL)
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+		SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+					pm_runtime_force_resume)
 };
 
 static struct platform_driver rk_iommu_driver = {
@@ -737,6 +740,7 @@ static int __init rk_iommu_init(void)
 subsys_initcall(rk_iommu_init);
 
 MODULE_DESCRIPTION("IOMMU API for Rockchip");
-MODULE_AUTHOR("Simon Xue <xxm@rock-chips.com> and Daniel Kurtz <djkurtz@chromium.org>");
+MODULE_AUTHOR(
+	"Simon Xue <xxm@rock-chips.com> and Daniel Kurtz <djkurtz@chromium.org>");
 MODULE_ALIAS("platform:rockchip-iommu");
 MODULE_LICENSE("GPL v2");
