@@ -7,6 +7,7 @@
 #include <linux/kvm_host.h>
 #include <linux/atomic.h>
 #include <linux/spinlock.h>
+#include <linux/pkvm_asgard.h>
 
 static unsigned long dev_to_id(struct device *dev)
 {
@@ -165,3 +166,23 @@ int pkvm_iommu_rk_disable(unsigned int iommu_id)
 	return kvm_call_hyp_nvhe(__pkvm_iommu_rk_disable, iommu_id);
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_rk_disable);
+
+int pkvm_revpt_set_host_dma_domain(unsigned int domain_id)
+{
+	return kvm_call_hyp_nvhe(__pkvm_revpt_set_host_dma_domain, domain_id);
+}
+EXPORT_SYMBOL_GPL(pkvm_revpt_set_host_dma_domain);
+
+int pkvm_revpt_sync(void)
+{
+	return kvm_call_hyp_nvhe(__pkvm_revpt_sync);
+}
+EXPORT_SYMBOL_GPL(pkvm_revpt_sync);
+
+int pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
+			      u32 *copied, u32 *total)
+{
+	return kvm_call_hyp_nvhe(__pkvm_revpt_get_violations, out, cap, copied,
+				 total);
+}
+EXPORT_SYMBOL_GPL(pkvm_revpt_get_violations);

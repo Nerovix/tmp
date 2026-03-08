@@ -12,6 +12,7 @@
 #include <linux/build_bug.h>
 #include <linux/types.h>
 #include <asm/page.h>
+#include <linux/pkvm_asgard.h>
 
 /* 页当前所有者。 */
 enum page_owner {
@@ -184,5 +185,11 @@ int revpt_bootstrap_free_ram_range(u64 start_pfn, u64 nr_pages);
 int revpt_bootstrap_hyp_sensitive_range(u64 start_pfn, u64 nr_pages, u16 extra_flags);
 /* 启动期批量写入 MMIO 敏感窗口基线状态（owner=Hyp）。 */
 int revpt_bootstrap_mmio_range(u64 start_pfn, u64 nr_pages);
+
+/* 导出违规记录给 host。 */
+int revpt_copy_violations(struct pkvm_asgard_violation *out, u32 cap, u32 *copied,
+			 u32 *total);
+/* 触发一次全量检查。 */
+void revpt_force_rescan(void);
 
 #endif /* __ARM64_KVM_NVHE_PFN_INFO_H__ */

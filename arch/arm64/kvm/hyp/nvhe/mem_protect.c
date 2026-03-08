@@ -567,6 +567,22 @@ int host_stage2_set_owner_locked(phys_addr_t addr, u64 size,
 
 	prot = owner_id == pkvm_host_id ? PKVM_HOST_MEM_PROT : 0;
 	pkvm_iommu_host_stage2_idmap(addr, addr + size, prot);
+
+	/*
+	 * owner 发生变化时，立刻同步到 rev_pt 测试账本。
+	 * 注意：本函数在 host_kvm.lock 下执行，revpt 内部使用分片锁，
+	 * 不回调 stage2/iommu，避免锁顺序反转。
+	 */
+	if (owner_id == pkvm_host_id)
+		(void)revpt_set_owner_range(addr >> PAGE_SHIFT, size >> PAGE_SHIFT,
+					   OWN_HOST);
+	else if (owner_id == pkvm_hyp_id)
+		(void)revpt_set_owner_range(addr >> PAGE_SHIFT, size >> PAGE_SHIFT,
+					   OWN_HYP);
+	else
+		(void)revpt_set_owner_range(addr >> PAGE_SHIFT, size >> PAGE_SHIFT,
+					   OWN_ENCLAVE);
+	(void)revpt_check_range(addr >> PAGE_SHIFT, size >> PAGE_SHIFT);
 	return 0;
 }
 

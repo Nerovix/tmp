@@ -16,6 +16,7 @@
 #include <linux/types.h>
 #include <linux/jump_label.h>
 #include <linux/kvm_types.h>
+#include <linux/pkvm_asgard.h>
 #include <linux/percpu.h>
 #include <linux/psci.h>
 #include <asm/arch_gicv3.h>
@@ -406,6 +407,10 @@ int pkvm_iommu_map(unsigned int domain_id, unsigned long iova, phys_addr_t paddr
 size_t pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova, size_t size);
 phys_addr_t pkvm_iommu_iova_to_phys(unsigned int domain_id, unsigned long iova);
 int pkvm_view_iopt(unsigned int domain_id, u64 *pool, int cap, phys_addr_t phys_l, phys_addr_t phys_r);
+int pkvm_revpt_set_host_dma_domain(unsigned int domain_id);
+int pkvm_revpt_sync(void);
+int pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
+			      u32 *copied, u32 *total);
 int pkvm_iommu_flush_iotlb_all(unsigned int iommu_id);
 int pkvm_iommu_rk_enable(unsigned int iommu_id);
 int pkvm_iommu_rk_disable(unsigned int iommu_id);

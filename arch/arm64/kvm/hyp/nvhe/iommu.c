@@ -6,6 +6,7 @@
 
 #include "linux/types.h"
 #include <linux/kvm_host.h>
+#include <linux/limits.h>
 
 #include <asm/kvm_asm.h>
 #include <asm/kvm_hyp.h>
@@ -15,6 +16,7 @@
 #include <hyp/adjust_pc.h>
 #include <nvhe/iommu.h>
 #include <nvhe/mm.h>
+#include "pfn_info.h"
 
 enum {
 	IOMMU_DRIVER_NOT_READY = 0,
@@ -37,6 +39,9 @@ static DEFINE_HYP_SPINLOCK(iommu_registration_lock);
 
 static void *iommu_mem_pool;
 static size_t iommu_mem_remaining;
+
+/* 由 userspace 显式指定：哪个 domain_id 代表 host DMA。 */
+static unsigned int revpt_host_dma_domain = UINT_MAX;
 
 static void assert_host_component_locked(void)
 {
@@ -545,16 +550,32 @@ int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
 		     phys_addr_t paddr, size_t size, int prot)
 {
 	struct pkvm_iommu *dev;
+	enum revpt_ref_type type;
+	u64 pfn = paddr >> PAGE_SHIFT;
+	u64 pages = PAGE_ALIGN(size) >> PAGE_SHIFT;
 	int ret;
 
 	assert_host_component_locked();
 
 	list_for_each_entry (dev, &iommu_list, list) {
 		ret = dev->ops->map ? dev->ops->map(domain_id, iova, paddr,
-						    size, prot) :
-				      0;
+					    size, prot) :
+			      0;
 		if (ret)
 			return ret;
+	}
+
+	/*
+	 * 这里把 IOMMU 映射变更同步到测试账本：
+	 * - 先用外部工具设置 host DMA domain_id
+	 * - 该 domain 记为 HOST_DMA，其余按 ENCLAVE_DMA 记账
+	 */
+	type = (domain_id == revpt_host_dma_domain) ? REVPT_REF_HOST_DMA :
+						      REVPT_REF_ENCLAVE_DMA;
+	if (pages) {
+		(void)revpt_ref_inc_range(pfn, pages, type);
+		/* 立即触发区间检查，避免把违规延后到离线阶段才暴露。 */
+		(void)revpt_check_range(pfn, pages);
 	}
 
 	return ret;
@@ -562,18 +583,34 @@ int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
 
 // pt-checked
 size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
-			  size_t size)
+		  size_t size)
 {
 	struct pkvm_iommu *dev;
+	enum revpt_ref_type type;
+	phys_addr_t paddr;
+	u64 pages = PAGE_ALIGN(size) >> PAGE_SHIFT;
 	size_t ret;
 
 	assert_host_component_locked();
+
+	/*
+	 * 先快照旧映射，再执行 unmap：
+	 * 这样可以正确把旧 PFN 的 DMA 引用计数减回去。
+	 */
+	paddr = __pkvm_iommu_iova_to_phys(domain_id, iova);
 
 	list_for_each_entry (dev, &iommu_list, list) {
 		ret = dev->ops->unmap ? dev->ops->unmap(domain_id, iova, size) :
 					0;
 		if (ret)
 			return ret;
+	}
+
+	type = (domain_id == revpt_host_dma_domain) ? REVPT_REF_HOST_DMA :
+						      REVPT_REF_ENCLAVE_DMA;
+	if (pages && paddr) {
+		(void)revpt_ref_dec_range(paddr >> PAGE_SHIFT, pages, type);
+		(void)revpt_check_range(paddr >> PAGE_SHIFT, pages);
 	}
 
 	return ret;
@@ -816,4 +853,26 @@ void pkvm_iommu_host_stage2_idmap(phys_addr_t start, phys_addr_t end,
 		if (dev->powered && dev->ops->host_stage2_idmap_apply)
 			dev->ops->host_stage2_idmap_apply(dev, start, end);
 	}
+}
+
+
+int __pkvm_revpt_set_host_dma_domain(unsigned int domain_id)
+{
+	host_lock_component();
+	revpt_host_dma_domain = domain_id;
+	host_unlock_component();
+	return 0;
+}
+
+int __pkvm_revpt_sync(void)
+{
+	/* 主动全量复扫：用于板端测试命令触发“重新爬取元数据”。 */
+	revpt_force_rescan();
+	return 0;
+}
+
+int __pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
+				 u32 *copied, u32 *total)
+{
+	return revpt_copy_violations(out, cap, copied, total);
 }

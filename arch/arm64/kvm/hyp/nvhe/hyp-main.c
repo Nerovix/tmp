@@ -1466,6 +1466,55 @@ out:
 	cpu_reg(host_ctxt, 1) = res;
 }
 
+
+static void handle___pkvm_revpt_set_host_dma_domain(struct kvm_cpu_context *host_ctxt)
+{
+	DECLARE_REG(unsigned int, domain_id, host_ctxt, 1);
+
+	cpu_reg(host_ctxt, 1) = __pkvm_revpt_set_host_dma_domain(domain_id);
+}
+
+static void handle___pkvm_revpt_sync(struct kvm_cpu_context *host_ctxt)
+{
+	cpu_reg(host_ctxt, 1) = __pkvm_revpt_sync();
+}
+
+static void handle___pkvm_revpt_get_violations(struct kvm_cpu_context *host_ctxt)
+{
+	DECLARE_REG(struct pkvm_asgard_violation *, out_hva, host_ctxt, 1);
+	DECLARE_REG(u32, cap, host_ctxt, 2);
+	DECLARE_REG(u32 *, copied_hva, host_ctxt, 3);
+	DECLARE_REG(u32 *, total_hva, host_ctxt, 4);
+	struct pkvm_asgard_violation *out = kern_hyp_va(out_hva);
+	u32 *copied = kern_hyp_va(copied_hva);
+	u32 *total = kern_hyp_va(total_hva);
+	size_t bytes = cap * sizeof(*out);
+	int ret;
+
+	ret = hyp_pin_shared_mem((u8 *)copied, (u8 *)copied + sizeof(*copied));
+	if (ret)
+		goto out;
+	ret = hyp_pin_shared_mem((u8 *)total, (u8 *)total + sizeof(*total));
+	if (ret)
+		goto unpin_copied;
+	if (bytes) {
+		ret = hyp_pin_shared_mem((u8 *)out, (u8 *)out + bytes);
+		if (ret)
+			goto unpin_total;
+	}
+
+	ret = __pkvm_revpt_get_violations(out, cap, copied, total);
+
+	if (bytes)
+		hyp_unpin_shared_mem((u8 *)out, (u8 *)out + bytes);
+unpin_total:
+	hyp_unpin_shared_mem((u8 *)total, (u8 *)total + sizeof(*total));
+unpin_copied:
+	hyp_unpin_shared_mem((u8 *)copied, (u8 *)copied + sizeof(*copied));
+out:
+	cpu_reg(host_ctxt, 1) = ret;
+}
+
 typedef void (*hcall_t)(struct kvm_cpu_context *);
 
 #define HANDLE_FUNC(x) [__KVM_HOST_SMCCC_FUNC_##x] = (hcall_t)handle_##x
@@ -1520,6 +1569,9 @@ static const hcall_t host_hcall[] = {
 	HANDLE_FUNC(__pkvm_stage2_pt_count),
 	HANDLE_FUNC(__pkvm_get_shadow_handles),
 	HANDLE_FUNC(__pkvm_view_iopt),
+	HANDLE_FUNC(__pkvm_revpt_set_host_dma_domain),
+	HANDLE_FUNC(__pkvm_revpt_sync),
+	HANDLE_FUNC(__pkvm_revpt_get_violations),
 };
 
 static inline u64 kernel__text_addr(void)

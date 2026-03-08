@@ -15,6 +15,7 @@
 #include <linux/printk.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <linux/pkvm_asgard.h>
 
 #include "pfn_info.h"
 
@@ -708,3 +709,51 @@ int revpt_bootstrap_mmio_range(u64 start_pfn, u64 nr_pages)
 	return 0;
 }
 
+
+
+/* 导出违规快照给 host。调用方需保证 out 缓冲区可写。 */
+int revpt_copy_violations(struct pkvm_asgard_violation *out, u32 cap, u32 *copied,
+			 u32 *total)
+{
+	unsigned long irqflags;
+	u32 i, cnt;
+
+	if (!copied || !total)
+		return -EINVAL;
+
+	raw_spin_lock_irqsave(&revpt_violate_lock, irqflags);
+	*total = violate_num;
+	cnt = min(cap, violate_num);
+	*copied = cnt;
+
+	for (i = 0; i < cnt; i++) {
+		out[i].pfn = violate_list[i].pfn;
+		out[i].reason = violate_list[i].reason;
+		out[i].reserved = 0;
+		out[i].info.owner = violate_list[i].info.owner;
+		out[i].info.allowed_mask = violate_list[i].info.allowed_mask;
+		out[i].info.flags = violate_list[i].info.flags;
+		out[i].info.host_refs = violate_list[i].info.host_refs;
+		out[i].info.host_dev_refs = violate_list[i].info.host_dev_refs;
+		out[i].info.enclave_refs = violate_list[i].info.enclave_refs;
+		out[i].info.enclave_dev_refs = violate_list[i].info.enclave_dev_refs;
+		out[i].info.hyp_refs = violate_list[i].info.hyp_refs;
+		out[i].info.generation = violate_list[i].info.generation;
+	}
+	raw_spin_unlock_irqrestore(&revpt_violate_lock, irqflags);
+
+	return 0;
+}
+
+/* 全量复扫：用于测试命令触发一次“立即一致性检查”。 */
+void revpt_force_rescan(void)
+{
+	u64 i;
+
+	revpt_ensure_init();
+	for (i = 0; i < REV_PT_NR_PAGES; i++) {
+		if (!(READ_ONCE(rev_pt[i].flags) & PFN_F_TRACKED))
+			continue;
+		(void)revpt_check_pfn(i);
+	}
+}
