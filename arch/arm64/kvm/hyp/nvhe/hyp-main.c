@@ -382,6 +382,8 @@ static void handle_pvm_exit_dabt(struct kvm_vcpu *host_vcpu,
 	WRITE_ONCE(__vcpu_sys_reg(host_vcpu, SCTLR_EL1),
 		   __vcpu_sys_reg(shadow_vcpu, SCTLR_EL1) &
 			   (SCTLR_ELx_EE | SCTLR_EL1_E0E));
+	
+//	这里有一个兜底路径，允许pvm直接访问RKNPU的地址。
 
 	/* TODO: Do not hardcode RKNPU MMIO regions. */
 	if (shadow_vcpu->arch.fault.hpfar_el2 >= (0xf0000000 >> 8) &&

@@ -21,6 +21,7 @@ int rockchip_iommu_enable(struct device *dev)
 /* NOTE: The pKVM driver function will be called if both modules are loaded. */
 #if IS_ENABLED(CONFIG_PKVM_ROCKCHIP_IOMMU)
 	if (!rockchip_iommu_enable_fn)
+		// 这棵树里 只 需要看这个
 		rockchip_iommu_enable_fn = symbol_get(pkvm_rockchip_iommu_enable);
 #endif
 #if IS_ENABLED(CONFIG_ROCKCHIP_IOMMU)

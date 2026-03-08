@@ -1476,8 +1476,10 @@ bool kvm_handle_pvm_hvc64(struct kvm_vcpu *vcpu, u64 *exit_code)
 			&vcpu->arch.pkvm.shadow_vm->arch.flags);
 		val[0] = SMCCC_RET_SUCCESS;
 		break;
+// pt-mdf 不太确定asgard有没有用过这个hypercall
 	case ARM_SMCCC_VENDOR_HYP_KVM_MMIO_GUARD_MAP_FUNC_ID:
 		return pkvm_install_ioguard_page(vcpu, exit_code);
+// pt-mdf 不太确定asgard有没有用过这个hypercall
 	case ARM_SMCCC_VENDOR_HYP_KVM_MMIO_GUARD_UNMAP_FUNC_ID:
 		if (__pkvm_remove_ioguard_page(vcpu, vcpu_get_reg(vcpu, 1)))
 			val[0] = SMCCC_RET_INVALID_PARAMETER;
@@ -1493,10 +1495,13 @@ bool kvm_handle_pvm_hvc64(struct kvm_vcpu *vcpu, u64 *exit_code)
 			val[0] = PAGE_SIZE;
 		}
 		break;
+// pt-mdf guest share to host 
 	case ARM_SMCCC_VENDOR_HYP_KVM_MEM_SHARE_FUNC_ID:
 		return pkvm_memshare_call(vcpu, exit_code);
+// pt-mdf guest unshare to host
 	case ARM_SMCCC_VENDOR_HYP_KVM_MEM_UNSHARE_FUNC_ID:
 		return pkvm_memunshare_call(vcpu);
+// pt-mdf attach device to guest, 内部是hyp share。
 	case ARM_SMCCC_VENDOR_HYP_KVM_ATTACH_DEVICE_FUNC_ID:
 		asm volatile("isb; mrs %0, cntpct_el0" : "=r"(vcpu->time_1));
 		/* TODO: Do not hardcode RKNPU MMIO regions. */
@@ -1521,6 +1526,7 @@ bool kvm_handle_pvm_hvc64(struct kvm_vcpu *vcpu, u64 *exit_code)
 		val[0] = SMCCC_RET_SUCCESS;
 		asm volatile("isb; mrs %0, cntpct_el0" : "=r"(vcpu->time_3));
 		break;
+// pt-mdf detach from guest, 内部是hyp unshare。
 	case ARM_SMCCC_VENDOR_HYP_KVM_DETACH_DEVICE_FUNC_ID:
 		asm volatile("isb; mrs %0, cntpct_el0" : "=r"(vcpu->time_1));
 		/* TODO: Do not hardcode RKNPU MMIO regions. */

@@ -314,6 +314,8 @@ out_unlock:
 	return ret;
 }
 
+// pt-checked
+// 来自host的hypercall，把一个 IOMMU 设备注册到 pKVM 的 EL2 管理里，并把这段设备 MMIO 从 host 普通可映射路径中“接管”出来。核心看下面的host_stage2_unmap_dev_locked和__pkvm_create_private_mapping
 int __pkvm_iommu_register(unsigned long dev_id,
 			  enum pkvm_iommu_driver_id drv_id, phys_addr_t dev_pa,
 			  size_t dev_size, unsigned long parent_id,
@@ -353,6 +355,7 @@ int __pkvm_iommu_register(unsigned long dev_id,
 	 * Accept memory donation if the host is providing new memory.
 	 * Note: We do not return the memory even if there is an error later.
 	 */
+	// 这里是一些元数据。允许捐赠过来一些元数据。
 	if (kern_mem_va && mem_size) {
 		mem_va = kern_hyp_va(kern_mem_va);
 
@@ -411,17 +414,20 @@ int __pkvm_iommu_register(unsigned long dev_id,
 			goto out_free;
 	}
 
+	// 这里是把iommu的mmio区域捐赠给hyp
 	if (dev_pa && dev_size) {
 		/*
 		* Unmap the device's MMIO range from host stage-2. If registration
 		* is successful, future attempts to re-map will be blocked by
 		* pkvm_iommu_host_stage2_adjust_range.
 		*/
+		// 从host去掉映射
 		ret = host_stage2_unmap_dev_locked(dev_pa, dev_size);
 		if (ret)
 			goto out_free;
 
 		/* Create EL2 mapping for the device. Do it last as it is irreversible. */
+		// 给hyp加上映射
 		dev->va = (void *)__pkvm_create_private_mapping(
 			dev_pa, dev_size, PAGE_HYP_DEVICE);
 		if (IS_ERR(dev->va)) {
@@ -458,6 +464,9 @@ int __pkvm_iommu_finalize(void)
 	return ret;
 }
 
+// 分配新domain
+// 调查一下是不是只有一个rkiommu实例，预期是的。
+// 上面，是的。
 int __pkvm_iommu_alloc_domain(unsigned int domain_id, u32 type)
 {
 	struct pkvm_iommu *dev;
@@ -476,6 +485,7 @@ int __pkvm_iommu_alloc_domain(unsigned int domain_id, u32 type)
 	return ret;
 }
 
+// pt-checked
 int __pkvm_iommu_free_domain(unsigned int domain_id)
 {
 	struct pkvm_iommu *dev;
@@ -529,6 +539,8 @@ int __pkvm_iommu_detach_dev(unsigned int iommu_id, unsigned int domain_id)
 	return ret;
 }
 
+// pt-checked
+// 确定一个已明确的事实：domain_id在这棵树里就是io页表的唯一标识符。
 int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
 		     phys_addr_t paddr, size_t size, int prot)
 {
@@ -548,6 +560,7 @@ int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
 	return ret;
 }
 
+// pt-checked
 size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
 			  size_t size)
 {
@@ -779,6 +792,10 @@ bool pkvm_iommu_host_dabt_handler(struct kvm_cpu_context *host_ctxt, u32 esr,
 	return false;
 }
 
+/*
+每当 host stage-2 某段地址的可访问属性变化时（map/unmap/owner 注解变化），调用它把这个变化广播给 IOMMU 子系统
+rkiommu似乎没有实现这里面用到的方法，所以应该什么都不会做。
+*/
 void pkvm_iommu_host_stage2_idmap(phys_addr_t start, phys_addr_t end,
 				  enum kvm_pgtable_prot prot)
 {

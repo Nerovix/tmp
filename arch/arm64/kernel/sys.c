@@ -258,7 +258,7 @@ SYSCALL_DEFINE0(ls_devices)
 
 	for (i = 0; i < VDEV_MAX; i++) {
 		if (domains[i]) {
-			printk("ls_dev: vdev_%d, domain_id = %d\n, virtual rk iommu domain",
+			printk("ls_dev: vdev_%d, domain_id = %d, virtual rk iommu domain",
 			       i, rk_iommu_domain_id_fn(domains[i]));
 			dev_count++;
 		}
@@ -291,7 +291,8 @@ int find_iommu_domain_by_dev_name(char *name, struct iommu_domain **out_domain)
 					domain = domains[vdev_id];
 					goto found;
 				}
-				printk("view_iopt/iopt_map: invalid virtual device id %d\n", vdev_id);
+				printk("view_iopt/iopt_map: invalid virtual device id %d\n",
+				       vdev_id);
 				return -ENODEV;
 			}
 		}
@@ -427,10 +428,13 @@ SYSCALL_DEFINE4(view_iopt, char __user *, device_name, phys_addr_t, phys_l,
  */
 SYSCALL_DEFINE0(alloc_domain)
 {
+	struct iommu_domain *rk_domain = NULL;
 	if (domains_count >= VDEV_MAX) {
 		printk("alloc_domain: maximum number of virtual rk_iommu domains reached\n");
 		return -ENOMEM;
 	}
+
+	printk("alloc_domain: allocating a new virtual rk_iommu domain...\n");
 
 	typeof(rk_virtual_iommu_domain_alloc) *domain_alloc_fn;
 	domain_alloc_fn = symbol_get(rk_virtual_iommu_domain_alloc);
@@ -438,14 +442,16 @@ SYSCALL_DEFINE0(alloc_domain)
 		printk("alloc_domain: cannot find rk_virtual_iommu_domain_alloc, insmod iommu driver first\n");
 		return -EINVAL;
 	}
-	domains[domains_count++] = domain_alloc_fn();
-	symbol_put(domain_alloc_fn);
+	rk_domain = domain_alloc_fn();
+	symbol_put(rk_virtual_iommu_domain_alloc); 
+	domains[domains_count++] = rk_domain;
 	printk("alloc_domain: created virtual rk_iommu domain vdev_%d\n",
 	       domains_count - 1);
-	return 0;
+	return domains_count - 1;
 }
 
-SYSCALL_DEFINE3(iopt_map,char __user *, device_name, unsigned long, iova, phys_addr_t, pa)
+SYSCALL_DEFINE3(iopt_map, char __user *, device_name, unsigned long, iova,
+		phys_addr_t, pa)
 {
 	char name[100];
 	int ret = 0;
@@ -459,12 +465,19 @@ SYSCALL_DEFINE3(iopt_map,char __user *, device_name, unsigned long, iova, phys_a
 	if ((ret = find_iommu_domain_by_dev_name(name, &domain))) {
 		return ret;
 	}
-	
-	ret = rk_iopt_map(domain, iova, pa, PAGE_SIZE, IOMMU_READ | IOMMU_WRITE );
-	printk("iopt_map: rk_iopt_map returned %d\n", ret);
-	return ret;	
-}
+	typeof(rk_iopt_map) *rk_iopt_map_fn;
+	rk_iopt_map_fn = symbol_get(rk_iopt_map);
+	if (!rk_iopt_map_fn) {
+		printk("iopt_map: cannot find rk_iopt_map, insmod iommu driver first\n");
+		return -EINVAL;
+	}
 
+	ret = rk_iopt_map_fn(domain, iova, pa, PAGE_SIZE,
+			     IOMMU_READ | IOMMU_WRITE);
+	symbol_put(rk_iopt_map);
+	printk("iopt_map: rk_iopt_map returned %d\n", ret);
+	return ret;
+}
 
 asmlinkage long sys_ni_syscall(void);
 

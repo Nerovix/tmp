@@ -256,6 +256,7 @@ static int rk_iommu_alloc_domain(unsigned int domain_id, u32 type)
 	return 0;
 }
 
+// pt-mdf
 static int rk_iommu_free_domain(unsigned int domain_id)
 {
 	int i;
@@ -268,14 +269,13 @@ static int rk_iommu_free_domain(unsigned int domain_id)
 		if (rk_dte_is_pt_valid(dte)) {
 			phys_addr_t pt_phys = rk_dte_pt_address_v2(dte);
 			u32 *page_table = pa_to_va(pt_phys);
-
+			// 这里相当于释放了二级页表占用的内存页，也就是释放了一整个page的pte
+			// 要for一遍进行修改。
 			release_pages(page_table, 1);
 		}
 	}
-
 	release_pages(domains[domain_id]->dt, 1);
 	release_pages(domains[domain_id], 1);
-
 	return 0;
 }
 
@@ -328,6 +328,7 @@ static int rk_iommu_detach_dev(unsigned int iommu_id, unsigned int domain_id)
 	return 0;
 }
 
+// pt-mdf
 static size_t rk_iommu_unmap_iova(unsigned int domain_id, u32 *pte_addr,
 				  size_t size)
 {
@@ -350,6 +351,7 @@ static size_t rk_iommu_unmap_iova(unsigned int domain_id, u32 *pte_addr,
 	return pte_count * SPAGE_SIZE;
 }
 
+// pt-mdf-checked
 static size_t rk_iommu_unmap(unsigned int domain_id, unsigned long iova,
 			     size_t size)
 {
@@ -388,6 +390,7 @@ static size_t rk_iommu_unmap(unsigned int domain_id, unsigned long iova,
 	return unmap_size;
 }
 
+//pt-mdf
 static u32 *rk_dte_get_page_table_v2(unsigned int domain_id, unsigned long iova)
 {
 	u32 *page_table, *dte_addr;
@@ -424,6 +427,7 @@ done:
 	return (u32 *)pa_to_va(pt_phys);
 }
 
+// pt-mdf
 static int rk_iommu_map_iova_v2(unsigned int domain_id, u32 *pte_addr,
 				dma_addr_t pte_dma, dma_addr_t iova,
 				phys_addr_t paddr, size_t size, int prot)
@@ -466,6 +470,7 @@ unwind:
 	return -EADDRINUSE;
 }
 
+// pt-mdf-checked
 static int rk_iommu_map(unsigned int domain_id, unsigned long iova,
 			phys_addr_t paddr, size_t size, int prot)
 {
@@ -487,7 +492,7 @@ static int rk_iommu_map(unsigned int domain_id, unsigned long iova,
 	 * Since iommu_map() guarantees that both iova and size will be
 	 * aligned, we will always only be mapping from a single dte here.
 	 */
-	page_table = rk_dte_get_page_table_v2(domain_id, iova);
+	page_table = rk_dte_get_page_table_v2(domain_id, iova); // pt-mdf
 	if (IS_ERR(page_table)) {
 		hyp_spin_unlock(&domains[domain_id]->dt_lock);
 		return PTR_ERR(page_table);
@@ -498,7 +503,7 @@ static int rk_iommu_map(unsigned int domain_id, unsigned long iova,
 	pte_addr = &page_table[pte_index];
 	pte_dma = rk_dte_pt_address_v2(dte) + pte_index * sizeof(u32);
 	ret = rk_iommu_map_iova_v2(domain_id, pte_addr, pte_dma, iova, paddr,
-				   size, prot);
+				   size, prot); // pt-mdf
 
 	hyp_spin_unlock(&domains[domain_id]->dt_lock);
 
@@ -721,6 +726,7 @@ read_wa:
 	return 0;
 }
 
+// pt-checked
 static int rk_iommu_enable(unsigned int iommu_id)
 {
 	struct hyp_rk_iommu_domain *domain;
@@ -771,6 +777,7 @@ out_disable_stall:
 	return ret;
 }
 
+// pt-checked
 static int rk_iommu_disable(unsigned int iommu_id)
 {
 	int i;
@@ -790,6 +797,7 @@ static int rk_iommu_disable(unsigned int iommu_id)
 	return 0;
 }
 
+// pt-checked
 static int rk_iommu_enable_hyp(unsigned int domain_id)
 {
 	struct hyp_rk_iommu *iommu;
@@ -815,6 +823,7 @@ static int rk_iommu_enable_hyp(unsigned int domain_id)
 	return 0;
 }
 
+// pt-checked
 static int rk_iommu_disable_hyp(unsigned int domain_id)
 {
 	struct hyp_rk_iommu *iommu;

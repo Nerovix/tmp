@@ -366,11 +366,15 @@ int __pkvm_prot_finalize(void)
 	return 0;
 }
 
+// pt-mdf-checked
+// 把这些页从host中取消映射
 int host_stage2_unmap_dev_locked(phys_addr_t start, u64 size)
 {
 	int ret;
 
 	hyp_assert_lock_held(&host_kvm.lock);
+
+
 
 	ret = kvm_pgtable_stage2_unmap(&host_kvm.pgt, start, size);
 	if (ret)
@@ -588,6 +592,7 @@ static bool host_stage2_force_pte_cb(u64 addr, u64 end, enum kvm_pgtable_prot pr
 		return prot != PKVM_HOST_MMIO_PROT;
 }
 
+//pt-mdf-checked
 static int host_stage2_idmap(u64 addr)
 {
 	struct kvm_mem_range range;
@@ -666,6 +671,8 @@ static void host_inject_abort(struct kvm_cpu_context *host_ctxt)
 	write_sysreg_el2(spsr, SYS_SPSR);
 }
 
+// pt-checked
+// host发生也访问错误的整体入口。
 void handle_host_mem_abort(struct kvm_cpu_context *host_ctxt)
 {
 	struct kvm_vcpu_fault_info fault;
@@ -680,6 +687,7 @@ void handle_host_mem_abort(struct kvm_cpu_context *host_ctxt)
 
 	host_lock_component();
 
+	// 如果这篇区域区域打到iommu的mmio区域了就直接处理，否则懒映射
 	/* Check if an IOMMU device can handle the DABT. */
 	if (is_dabt(esr) && !addr_is_memory(addr) &&
 	    pkvm_iommu_host_dabt_handler(host_ctxt, esr, addr))
@@ -687,7 +695,7 @@ void handle_host_mem_abort(struct kvm_cpu_context *host_ctxt)
 
 	/* If not handled, attempt to map the page. */
 	if (ret == -EPERM)
-		ret = host_stage2_idmap(addr);
+		ret = host_stage2_idmap(addr);//这里是懒映射的主入口。这个函数只有这里一处引用
 
 	host_unlock_component();
 
@@ -1420,6 +1428,7 @@ static int __do_share(struct pkvm_mem_share *share)
  * Initiator: OWNED	=> SHARED_OWNED
  * Completer: NOPAGE	=> SHARED_BORROWED
  */
+ //pt-mdf-checked
 static int do_share(struct pkvm_mem_share *share)
 {
 	int ret;
@@ -1528,6 +1537,7 @@ static int __do_unshare(struct pkvm_mem_share *share)
  * Initiator: SHARED_OWNED	=> OWNED
  * Completer: SHARED_BORROWED	=> NOPAGE
  */
+// pt-mdf-checked
 static int do_unshare(struct pkvm_mem_share *share)
 {
 	int ret;
@@ -1622,6 +1632,7 @@ static int __do_donate(struct pkvm_mem_donation *donation)
  * Initiator: OWNED	=> NOPAGE
  * Completer: NOPAGE	=> OWNED
  */
+ //pt-mdf-checked
 static int do_donate(struct pkvm_mem_donation *donation)
 {
 	int ret;
@@ -1633,6 +1644,8 @@ static int do_donate(struct pkvm_mem_donation *donation)
 	return WARN_ON(__do_donate(donation));
 }
 
+
+// pt-checked
 int __pkvm_host_share_hyp(u64 pfn)
 {
 	int ret;
@@ -1666,6 +1679,7 @@ int __pkvm_host_share_hyp(u64 pfn)
 	return ret;
 }
 
+//pt-checked
 int __pkvm_guest_share_host(struct kvm_vcpu *vcpu, u64 ipa)
 {
 	int ret;
@@ -1697,6 +1711,7 @@ int __pkvm_guest_share_host(struct kvm_vcpu *vcpu, u64 ipa)
 	return ret;
 }
 
+//pt-checked
 int __pkvm_guest_unshare_host(struct kvm_vcpu *vcpu, u64 ipa)
 {
 	int ret;
@@ -1728,6 +1743,7 @@ int __pkvm_guest_unshare_host(struct kvm_vcpu *vcpu, u64 ipa)
 	return ret;
 }
 
+//pt-checked
 int __pkvm_host_unshare_hyp(u64 pfn)
 {
 	int ret;
@@ -1761,6 +1777,8 @@ int __pkvm_host_unshare_hyp(u64 pfn)
 	return ret;
 }
 
+
+// pt-checked
 int __pkvm_host_donate_hyp(u64 pfn, u64 nr_pages)
 {
 	int ret;
@@ -1793,6 +1811,7 @@ int __pkvm_host_donate_hyp(u64 pfn, u64 nr_pages)
 	return ret;
 }
 
+//pt-checked
 int __pkvm_hyp_donate_host(u64 pfn, u64 nr_pages)
 {
 	int ret;
@@ -1825,6 +1844,7 @@ int __pkvm_hyp_donate_host(u64 pfn, u64 nr_pages)
 	return ret;
 }
 
+//pt-checked
 int __pkvm_hyp_share_guest(u64 pfn, u64 gfn, u64 nr_pages, struct kvm_vcpu *vcpu)
 {
 	int ret;
@@ -1863,6 +1883,7 @@ int __pkvm_hyp_share_guest(u64 pfn, u64 gfn, u64 nr_pages, struct kvm_vcpu *vcpu
 	return ret;
 }
 
+//pt-checked
 int __pkvm_hyp_unshare_guest(u64 pfn, u64 gfn, u64 nr_pages, struct kvm_vcpu *vcpu)
 {
 	int ret;
@@ -1946,6 +1967,7 @@ void hyp_unpin_shared_mem(void *from, void *to)
 	host_unlock_component();
 }
 
+// pt-checked
 int __pkvm_host_share_guest(u64 pfn, u64 gfn, struct kvm_vcpu *vcpu)
 {
 	int ret;
@@ -1983,6 +2005,7 @@ int __pkvm_host_share_guest(u64 pfn, u64 gfn, struct kvm_vcpu *vcpu)
 	return ret;
 }
 
+// pt-checked
 int __pkvm_host_donate_guest(u64 pfn, u64 gfn, struct kvm_vcpu *vcpu)
 {
 	int ret;
@@ -2019,6 +2042,7 @@ int __pkvm_host_donate_guest(u64 pfn, u64 gfn, struct kvm_vcpu *vcpu)
 	return ret;
 }
 
+// ffa 与 trustzone和el3有关，这里不用管。
 int __pkvm_host_share_ffa(u64 pfn, u64 nr_pages)
 {
 	int ret;
@@ -2085,6 +2109,7 @@ static int hyp_zero_page(phys_addr_t phys)
 	return hyp_fixmap_unmap();
 }
 
+//pt-checked
 int __pkvm_host_reclaim_page(u64 pfn)
 {
 	u64 addr = hyp_pfn_to_phys(pfn);

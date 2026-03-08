@@ -7,6 +7,7 @@
  */
 
 #include "linux/types.h"
+#include <asm-generic/errno-base.h>
 #include <linux/clk.h>
 #include <linux/compiler.h>
 #include <linux/delay.h>
@@ -397,10 +398,6 @@ err_free_domain:
 	return NULL;
 }
 
-struct iommu_domain *rk_virtual_iommu_domain_alloc(void)
-{
-	return rk_iommu_domain_alloc(IOMMU_DOMAIN_UNMANAGED);
-}
 EXPORT_SYMBOL_GPL(rk_virtual_iommu_domain_alloc);
 
 static void rk_iommu_domain_free_v2(struct iommu_domain *domain)
@@ -506,22 +503,31 @@ static struct iommu_ops rk_iommu_ops_v2 = {
 	.of_xlate = rk_iommu_of_xlate,
 };
 
-int rk_iommu_domain_id_get(struct iommu_domain *dom)
+int rk_iommu_domain_id_get(struct iommu_domain *domain)
 {
 	struct rk_iommu_domain *rk_domain;
-	if (dom && dom->ops == &rk_iommu_ops_v2) {
-		rk_domain = to_rk_domain(dom);
+	if (domain && domain->ops == &rk_iommu_ops_v2) {
+		rk_domain = to_rk_domain(domain);
 		return rk_domain->id;
 	}
 	return -ENODEV;
 }
 EXPORT_SYMBOL_GPL(rk_iommu_domain_id_get);
 
+struct iommu_domain *rk_virtual_iommu_domain_alloc(void)
+{
+	struct iommu_domain *domain;
+	domain = rk_iommu_domain_alloc(IOMMU_DOMAIN_UNMANAGED);
+	if (domain) {
+		domain->ops = &rk_iommu_ops_v2;
+	}
+	return domain;
+}
 
 int rk_iopt_map(struct iommu_domain *domain, unsigned long iova, phys_addr_t pa,
 		size_t size, int prot)
 {
-	if(!domain||domain->ops!=&rk_iommu_ops_v2){
+	if (!domain || domain->ops != &rk_iommu_ops_v2) {
 		printk("rk_iopt_map: invalid iommu domain\n");
 		return -EINVAL;
 	}

@@ -4,6 +4,8 @@
  * Author: Quentin Perret <qperret@google.com>
  */
 
+
+
 #include <linux/kvm_host.h>
 #include <asm/kvm_hyp.h>
 #include <asm/kvm_mmu.h>
@@ -308,6 +310,8 @@ int hyp_create_idmap(u32 hyp_va_bits)
 	return __pkvm_create_mappings(start, end - start, start, PAGE_HYP_EXEC);
 }
 
+
+// 这里会从host要页，触发donate
 static void *admit_host_page(void *arg)
 {
 	struct kvm_hyp_memcache *host_mc = arg;
