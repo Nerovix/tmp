@@ -25,6 +25,7 @@ struct hyp_rk_iommu_domain {
 	bool shootdown_entire;
 };
 static struct hyp_rk_iommu_domain **domains;
+static bool rk_iommu_baseline_all_locked;
 
 struct hyp_rk_iommu {
 	struct list_head domains; /* attached domains */
@@ -960,6 +961,34 @@ out:
 	return ret;
 }
 
+
+
+static int rk_iommu_lock_all_domain_pts(struct pkvm_iommu *dev)
+{
+	size_t i;
+
+	/* 统一按 domain_id 递增加锁，避免死锁。 */
+	for (i = 0; i < RK_IOMMU_MAX_DOMAINS; i++) {
+		if (!domains[i])
+			continue;
+		hyp_spin_lock(&domains[i]->dt_lock);
+	}
+	rk_iommu_baseline_all_locked = true;
+	return 0;
+}
+
+static void rk_iommu_unlock_all_domain_pts(struct pkvm_iommu *dev)
+{
+	int i;
+
+	rk_iommu_baseline_all_locked = false;
+	for (i = RK_IOMMU_MAX_DOMAINS - 1; i >= 0; i--) {
+		if (!domains[i])
+			continue;
+		hyp_spin_unlock(&domains[i]->dt_lock);
+	}
+}
+
 static int get_all_domain_ids(unsigned int *domain_ids)
 {
 	int domains_count = 0;
@@ -985,7 +1014,8 @@ static int get_iopt(unsigned int domain_id, u64 *iovas, u64 *pas, u64 *ptes,
 	    !domains[domain_id]->dt)
 		return -ENODEV;
 
-	hyp_spin_lock(&domains[domain_id]->dt_lock);
+	if (!rk_iommu_baseline_all_locked)
+		hyp_spin_lock(&domains[domain_id]->dt_lock);
 	for (dte_index = 0; dte_index < NUM; dte_index++) {
 		dte = domains[domain_id]->dt[dte_index];
 		if (rk_dte_is_pt_valid(dte)) {
@@ -1011,7 +1041,8 @@ static int get_iopt(unsigned int domain_id, u64 *iovas, u64 *pas, u64 *ptes,
 		}
 	}
 
-	hyp_spin_unlock(&domains[domain_id]->dt_lock);
+	if (!rk_iommu_baseline_all_locked)
+		hyp_spin_unlock(&domains[domain_id]->dt_lock);
 	return cnt;
 }
 
@@ -1031,5 +1062,7 @@ const struct pkvm_iommu_ops pkvm_rockchip_iommu_ops = (struct pkvm_iommu_ops){
 	.rk_disable_hyp = rk_iommu_disable_hyp,
 	.host_dabt_handler = rk_iommu_host_dabt_handler,
 	.get_all_domain_ids = get_all_domain_ids,
+	.lock_all_domain_pts = rk_iommu_lock_all_domain_pts,
+	.unlock_all_domain_pts = rk_iommu_unlock_all_domain_pts,
 	.get_iopt = get_iopt,
 };

@@ -85,6 +85,10 @@ struct pkvm_iommu_ops {
 
 	int (*get_all_domain_ids)(unsigned int *pool);
 
+	/* 可选：在做全域快照前锁住全部 I/O 页表。 */
+	int (*lock_all_domain_pts)(struct pkvm_iommu *dev);
+	void (*unlock_all_domain_pts)(struct pkvm_iommu *dev);
+
 	int (*get_iopt)(unsigned int domain_id, u64 *iova, u64 *pas, u64 *ptes,
 			int cap, phys_addr_t phys_l, phys_addr_t phys_r);
 
