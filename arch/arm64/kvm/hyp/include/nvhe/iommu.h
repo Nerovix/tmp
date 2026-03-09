@@ -147,6 +147,7 @@ int __pkvm_revpt_set_host_dma_domain(unsigned int domain_id);
 int __pkvm_revpt_sync(void);
 int __pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
 				 u32 *copied, u32 *total);
+int __pkvm_revpt_capture_baseline(void);
 
 extern const struct pkvm_iommu_ops pkvm_rockchip_iommu_ops;
 

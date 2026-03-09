@@ -1515,6 +1515,12 @@ out:
 	cpu_reg(host_ctxt, 1) = ret;
 }
 
+
+static void handle___pkvm_revpt_capture_baseline(struct kvm_cpu_context *host_ctxt)
+{
+	cpu_reg(host_ctxt, 1) = __pkvm_revpt_capture_baseline();
+}
+
 typedef void (*hcall_t)(struct kvm_cpu_context *);
 
 #define HANDLE_FUNC(x) [__KVM_HOST_SMCCC_FUNC_##x] = (hcall_t)handle_##x
@@ -1572,6 +1578,7 @@ static const hcall_t host_hcall[] = {
 	HANDLE_FUNC(__pkvm_revpt_set_host_dma_domain),
 	HANDLE_FUNC(__pkvm_revpt_sync),
 	HANDLE_FUNC(__pkvm_revpt_get_violations),
+	HANDLE_FUNC(__pkvm_revpt_capture_baseline),
 };
 
 static inline u64 kernel__text_addr(void)

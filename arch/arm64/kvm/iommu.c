@@ -186,3 +186,9 @@ int pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
 				 total);
 }
 EXPORT_SYMBOL_GPL(pkvm_revpt_get_violations);
+
+int pkvm_revpt_capture_baseline(void)
+{
+	return kvm_call_hyp_nvhe(__pkvm_revpt_capture_baseline);
+}
+EXPORT_SYMBOL_GPL(pkvm_revpt_capture_baseline);

@@ -103,6 +103,7 @@ enum __kvm_host_smccc_func {
 	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_set_host_dma_domain,
 	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_sync,
 	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_get_violations,
+	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_capture_baseline,
 
 };
 

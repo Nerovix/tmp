@@ -4,7 +4,7 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-/* 用途：板端直接运行的最小测试工具。 */
+/* 用途：保留的全量复检工具（旧 sync 语义）。 */
 int main(void)
 {
 	int fd = open("/dev/pkvm_asgard", O_RDWR);
@@ -12,12 +12,12 @@ int main(void)
 		perror("open /dev/pkvm_asgard");
 		return 1;
 	}
-	if (ioctl(fd, PKVM_ASGARD_IOC_SYNC_LEDGER) < 0) {
-		perror("ioctl SYNC_LEDGER");
+	if (ioctl(fd, PKVM_ASGARD_IOC_RECHECK_LEDGER) < 0) {
+		perror("ioctl RECHECK_LEDGER");
 		close(fd);
 		return 1;
 	}
-	puts("revpt sync done");
+	puts("revpt full recheck done");
 	close(fd);
 	return 0;
 }

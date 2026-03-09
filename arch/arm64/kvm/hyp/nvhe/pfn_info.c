@@ -17,7 +17,7 @@
 #include <linux/string.h>
 #include <linux/pkvm_asgard.h>
 
-#include "pfn_info.h"
+#include <nvhe/pfn_info.h>
 
 static_assert((REV_PT_LOCK_STRIPES & (REV_PT_LOCK_STRIPES - 1)) == 0);
 

@@ -411,6 +411,7 @@ int pkvm_revpt_set_host_dma_domain(unsigned int domain_id);
 int pkvm_revpt_sync(void);
 int pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
 			      u32 *copied, u32 *total);
+int pkvm_revpt_capture_baseline(void);
 int pkvm_iommu_flush_iotlb_all(unsigned int iommu_id);
 int pkvm_iommu_rk_enable(unsigned int iommu_id);
 int pkvm_iommu_rk_disable(unsigned int iommu_id);
