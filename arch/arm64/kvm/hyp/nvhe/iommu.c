@@ -880,6 +880,7 @@ static int revpt_lock_all_iopt_locked(void)
 		lock_fn = dev->ops->lock_all_domain_pts;
 		if (!lock_fn)
 			continue;
+		/* Current Rockchip backend uses a global domain namespace; dedupe by lock fn is valid on this target. */
 		if (revpt_iopt_lock_fn_seen(lock_fn))
 			continue;
 
@@ -932,6 +933,7 @@ static int revpt_scan_iommu_locked(u64 *host_dma_snapshot_ptes)
 		walk_fn = dev->ops->walk_iopt;
 		if (!walk_fn)
 			continue;
+		/* Current Rockchip backend walks a global domain namespace; dedupe by walk fn is valid on this target. */
 		if (matched_walk_fn == walk_fn)
 			continue;
 

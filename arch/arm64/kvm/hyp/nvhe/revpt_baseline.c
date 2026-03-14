@@ -11,9 +11,17 @@
 
 struct revpt_test_cfg revpt_test_cfg;
 
+enum revpt_cpu_pass {
+	REVPT_CPU_PASS_OWNER = 0,
+	REVPT_CPU_PASS_BORROW_ACCESS,
+	REVPT_CPU_PASS_REF,
+};
+
 struct revpt_baseline_walk_ctx {
 	enum page_owner owner;
 	enum revpt_ref_type ref_type;
+	u8 borrow_access;
+	enum revpt_cpu_pass pass;
 	u64 *cpu_snapshot_pages;
 };
 
@@ -48,10 +56,55 @@ bool revpt_pa_overlap_enabled(phys_addr_t pa, u64 size,
 	return *clip_pages != 0;
 }
 
-static int revpt_track_mapping_range(u64 pfn, u64 nr_pages,
-			      enum page_owner owner,
-			      enum revpt_ref_type ref_type,
-			      u64 *cpu_snapshot_pages)
+static inline enum pkvm_page_state revpt_stage2_leaf_state(kvm_pte_t pte)
+{
+	/*
+	 * Reuse pKVM stage-2 SW bits semantics from mem_protect:
+	 * PKVM_PAGE_{OWNED,SHARED_OWNED,SHARED_BORROWED}.
+	 */
+	return pkvm_getstate(kvm_pgtable_stage2_pte_prot(pte));
+}
+
+static inline bool revpt_stage2_leaf_is_owner_mapping(kvm_pte_t pte)
+{
+	enum pkvm_page_state state = revpt_stage2_leaf_state(pte);
+
+	return state == PKVM_PAGE_OWNED || state == PKVM_PAGE_SHARED_OWNED;
+}
+
+static inline bool revpt_stage2_leaf_is_borrowed_mapping(kvm_pte_t pte)
+{
+	return revpt_stage2_leaf_state(pte) == PKVM_PAGE_SHARED_BORROWED;
+}
+
+static int revpt_track_owner_range(u64 pfn, u64 nr_pages, enum page_owner owner,
+				   u64 *cpu_snapshot_pages)
+{
+	u64 i;
+
+	for (i = 0; i < nr_pages; i++) {
+		u64 cur = pfn + i;
+		struct pfn_info info;
+
+		(void)revpt_set_flags(cur, PFN_F_TRACKED | PFN_F_RAM, 0);
+		if (revpt_snapshot_pfn(cur, &info))
+			return -EINVAL;
+
+		if (!(info.flags & PFN_F_TRACKED) || info.owner == OWN_FREE) {
+			if (revpt_set_owner(cur, owner))
+				return -EINVAL;
+		} else if (info.owner != owner) {
+			return -EINVAL;
+		}
+
+		(*cpu_snapshot_pages)++;
+	}
+
+	return 0;
+}
+
+static int revpt_track_borrow_range(u64 pfn, u64 nr_pages, u8 borrow_access,
+				    u64 *cpu_snapshot_pages)
 {
 	u64 i;
 
@@ -59,7 +112,21 @@ static int revpt_track_mapping_range(u64 pfn, u64 nr_pages,
 		u64 cur = pfn + i;
 
 		(void)revpt_set_flags(cur, PFN_F_TRACKED | PFN_F_RAM, 0);
-		(void)revpt_set_owner(cur, owner);
+		(void)revpt_grant_access(cur, borrow_access);
+		(*cpu_snapshot_pages)++;
+	}
+
+	return 0;
+}
+
+static int revpt_track_ref_range(u64 pfn, u64 nr_pages, enum revpt_ref_type ref_type,
+				 u64 *cpu_snapshot_pages)
+{
+	u64 i;
+
+	for (i = 0; i < nr_pages; i++) {
+		u64 cur = pfn + i;
+
 		(void)revpt_ref_inc(cur, ref_type);
 		(*cpu_snapshot_pages)++;
 	}
@@ -83,37 +150,43 @@ static int revpt_stage2_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
 	if (!revpt_pa_overlap_enabled(pa, end - start, &clip_pfn, &clip_pages))
 		return 0;
 
-	return revpt_track_mapping_range(clip_pfn, clip_pages, ctx->owner,
-					 ctx->ref_type,
-					 ctx->cpu_snapshot_pages);
+	switch (ctx->pass) {
+	case REVPT_CPU_PASS_OWNER:
+		if (!revpt_stage2_leaf_is_owner_mapping(pte))
+			return 0;
+		return revpt_track_owner_range(clip_pfn, clip_pages, ctx->owner,
+					      ctx->cpu_snapshot_pages);
+	case REVPT_CPU_PASS_BORROW_ACCESS:
+		if (!revpt_stage2_leaf_is_borrowed_mapping(pte))
+			return 0;
+		return revpt_track_borrow_range(clip_pfn, clip_pages,
+					       ctx->borrow_access,
+					       ctx->cpu_snapshot_pages);
+	case REVPT_CPU_PASS_REF:
+		return revpt_track_ref_range(clip_pfn, clip_pages, ctx->ref_type,
+					     ctx->cpu_snapshot_pages);
+	default:
+		return -EINVAL;
+	}
 }
 
 static int revpt_hyp_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
 			     enum kvm_pgtable_walk_flags flags,
 			     void *arg)
 {
-	struct revpt_baseline_walk_ctx *ctx = arg;
-	kvm_pte_t pte = READ_ONCE(*ptep);
-	phys_addr_t pa;
-	u64 clip_pfn, clip_pages;
-
-	if (!kvm_pte_valid(pte))
-		return 0;
-
-	pa = (phys_addr_t)(pte & KVM_PTE_ADDR_MASK);
-	if (!revpt_pa_overlap_enabled(pa, end - start, &clip_pfn, &clip_pages))
-		return 0;
-
-	return revpt_track_mapping_range(clip_pfn, clip_pages,
-					 OWN_HYP, REVPT_REF_HYP_CPU,
-					 ctx->cpu_snapshot_pages);
+	return revpt_stage2_walk_cb(start, end, level, ptep, flags, arg);
 }
 
-int revpt_capture_cpu_baseline_locked(u64 *cpu_snapshot_pages)
+static int revpt_walk_cpu_tables_pass_locked(enum revpt_cpu_pass pass,
+					      struct kvm_shadow_vm **locked_vms,
+					      int nr_locked,
+					      u64 *cpu_snapshot_pages)
 {
 	struct revpt_baseline_walk_ctx host_ctx = {
 		.owner = OWN_HOST,
 		.ref_type = REVPT_REF_HOST_CPU,
+		.borrow_access = ACC_HOST_CPU,
+		.pass = pass,
 		.cpu_snapshot_pages = cpu_snapshot_pages,
 	};
 	struct kvm_pgtable_walker host_walker = {
@@ -124,6 +197,8 @@ int revpt_capture_cpu_baseline_locked(u64 *cpu_snapshot_pages)
 	struct revpt_baseline_walk_ctx hyp_ctx = {
 		.owner = OWN_HYP,
 		.ref_type = REVPT_REF_HYP_CPU,
+		.borrow_access = ACC_HYP_CPU,
+		.pass = pass,
 		.cpu_snapshot_pages = cpu_snapshot_pages,
 	};
 	struct kvm_pgtable_walker hyp_walker = {
@@ -131,6 +206,44 @@ int revpt_capture_cpu_baseline_locked(u64 *cpu_snapshot_pages)
 		.arg = &hyp_ctx,
 		.flags = KVM_PGTABLE_WALK_LEAF,
 	};
+	int i, ret;
+
+	ret = kvm_pgtable_walk(&pkvm_pgtable, 0, BIT(pkvm_pgtable.ia_bits),
+			       &hyp_walker);
+	if (ret)
+		return ret;
+
+	ret = kvm_pgtable_walk(&host_kvm.pgt, 0, BIT(host_kvm.pgt.ia_bits),
+			       &host_walker);
+	if (ret)
+		return ret;
+
+	for (i = 0; i < nr_locked; i++) {
+		struct revpt_baseline_walk_ctx guest_ctx = {
+			.owner = OWN_ENCLAVE,
+			.ref_type = REVPT_REF_ENCLAVE_CPU,
+			.borrow_access = ACC_ENCLAVE_CPU,
+			.pass = pass,
+			.cpu_snapshot_pages = cpu_snapshot_pages,
+		};
+		struct kvm_pgtable_walker guest_walker = {
+			.cb = revpt_stage2_walk_cb,
+			.arg = &guest_ctx,
+			.flags = KVM_PGTABLE_WALK_LEAF,
+		};
+		struct kvm_shadow_vm *vm = locked_vms[i];
+
+		ret = kvm_pgtable_walk(&vm->pgt, 0, BIT(vm->pgt.ia_bits),
+				       &guest_walker);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
+int revpt_capture_cpu_baseline_locked(u64 *cpu_snapshot_pages)
+{
 	struct kvm_shadow_vm *locked_vms[KVM_MAX_PVMS];
 	int i, nr_locked = 0, ret;
 
@@ -145,34 +258,24 @@ int revpt_capture_cpu_baseline_locked(u64 *cpu_snapshot_pages)
 		locked_vms[nr_locked++] = vm;
 	}
 
-	ret = kvm_pgtable_walk(&pkvm_pgtable, 0, BIT(pkvm_pgtable.ia_bits),
-			       &hyp_walker);
+	ret = revpt_walk_cpu_tables_pass_locked(REVPT_CPU_PASS_OWNER,
+						locked_vms,
+						nr_locked,
+						cpu_snapshot_pages);
 	if (ret)
 		goto out_unlock;
 
-	ret = kvm_pgtable_walk(&host_kvm.pgt, 0, BIT(host_kvm.pgt.ia_bits),
-			       &host_walker);
+	ret = revpt_walk_cpu_tables_pass_locked(REVPT_CPU_PASS_BORROW_ACCESS,
+						locked_vms,
+						nr_locked,
+						cpu_snapshot_pages);
 	if (ret)
 		goto out_unlock;
 
-	for (i = 0; i < nr_locked; i++) {
-		struct revpt_baseline_walk_ctx guest_ctx = {
-			.owner = OWN_ENCLAVE,
-			.ref_type = REVPT_REF_ENCLAVE_CPU,
-			.cpu_snapshot_pages = cpu_snapshot_pages,
-		};
-		struct kvm_pgtable_walker guest_walker = {
-			.cb = revpt_stage2_walk_cb,
-			.arg = &guest_ctx,
-			.flags = KVM_PGTABLE_WALK_LEAF,
-		};
-		struct kvm_shadow_vm *vm = locked_vms[i];
-
-		ret = kvm_pgtable_walk(&vm->pgt, 0, BIT(vm->pgt.ia_bits),
-				       &guest_walker);
-		if (ret)
-			goto out_unlock;
-	}
+	ret = revpt_walk_cpu_tables_pass_locked(REVPT_CPU_PASS_REF,
+						locked_vms,
+						nr_locked,
+						cpu_snapshot_pages);
 
 out_unlock:
 	for (i = nr_locked - 1; i >= 0; i--)
