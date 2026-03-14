@@ -828,6 +828,13 @@ struct revpt_iommu_walk_ctx {
 	u64 *host_dma_snapshot_ptes;
 };
 
+struct revpt_iopt_lock_state {
+	struct pkvm_iommu *devs[PKVM_IOMMU_NR_DRIVERS];
+	u32 nr_locked;
+};
+
+static struct revpt_iopt_lock_state revpt_iopt_lock_state;
+
 static int revpt_iommu_walk_cb(unsigned int domain_id, u64 iova,
 			       phys_addr_t pa, u64 pte, void *arg)
 {
@@ -849,25 +856,62 @@ static int revpt_iommu_walk_cb(unsigned int domain_id, u64 iova,
 	return 0;
 }
 
+static bool revpt_iopt_lock_fn_seen(int (*lock_fn)(struct pkvm_iommu *))
+{
+	u32 i;
+
+	for (i = 0; i < revpt_iopt_lock_state.nr_locked; i++) {
+		if (revpt_iopt_lock_state.devs[i]->ops->lock_all_domain_pts == lock_fn)
+			return true;
+	}
+
+	return false;
+}
+
 static int revpt_lock_all_iopt_locked(void)
 {
 	struct pkvm_iommu *dev;
+	int ret = 0;
 
+	revpt_iopt_lock_state.nr_locked = 0;
 	list_for_each_entry (dev, &iommu_list, list) {
-		if (dev->ops->lock_all_domain_pts) {
-			int ret = dev->ops->lock_all_domain_pts(dev);
-			if (ret)
-				return ret;
-		}
+		int (*lock_fn)(struct pkvm_iommu *);
+
+		lock_fn = dev->ops->lock_all_domain_pts;
+		if (!lock_fn)
+			continue;
+		if (revpt_iopt_lock_fn_seen(lock_fn))
+			continue;
+
+		ret = lock_fn(dev);
+		if (ret)
+			goto unwind;
+
+		revpt_iopt_lock_state.devs[revpt_iopt_lock_state.nr_locked++] = dev;
 	}
+
 	return 0;
+
+unwind:
+	while (revpt_iopt_lock_state.nr_locked > 0) {
+		struct pkvm_iommu *locked_dev;
+
+		revpt_iopt_lock_state.nr_locked--;
+		locked_dev = revpt_iopt_lock_state.devs[revpt_iopt_lock_state.nr_locked];
+		if (locked_dev->ops->unlock_all_domain_pts)
+			locked_dev->ops->unlock_all_domain_pts(locked_dev);
+	}
+
+	return ret;
 }
 
 static void revpt_unlock_all_iopt_locked(void)
 {
-	struct pkvm_iommu *dev;
+	while (revpt_iopt_lock_state.nr_locked > 0) {
+		struct pkvm_iommu *dev;
 
-	list_for_each_entry_reverse (dev, &iommu_list, list) {
+		revpt_iopt_lock_state.nr_locked--;
+		dev = revpt_iopt_lock_state.devs[revpt_iopt_lock_state.nr_locked];
 		if (dev->ops->unlock_all_domain_pts)
 			dev->ops->unlock_all_domain_pts(dev);
 	}
@@ -876,19 +920,35 @@ static void revpt_unlock_all_iopt_locked(void)
 static int revpt_scan_iommu_locked(u64 *host_dma_snapshot_ptes)
 {
 	struct pkvm_iommu *dev;
+	int (*matched_walk_fn)(unsigned int, pkvm_iopt_walk_cb_t, void *) = NULL;
 
 	list_for_each_entry (dev, &iommu_list, list) {
 		struct revpt_iommu_walk_ctx ctx = {
 			.host_dma_snapshot_ptes = host_dma_snapshot_ptes,
 		};
+		int (*walk_fn)(unsigned int, pkvm_iopt_walk_cb_t, void *);
+		int ret;
 
-		if (!dev->ops->walk_iopt)
+		walk_fn = dev->ops->walk_iopt;
+		if (!walk_fn)
+			continue;
+		if (matched_walk_fn == walk_fn)
 			continue;
 
-		if (dev->ops->walk_iopt(revpt_test_cfg.host_dma_domain,
-					revpt_iommu_walk_cb, &ctx))
+		ret = walk_fn(revpt_test_cfg.host_dma_domain,
+			      revpt_iommu_walk_cb, &ctx);
+		if (ret == -ENOENT)
 			continue;
+		if (ret < 0)
+			return ret;
+		if (matched_walk_fn)
+			return -EEXIST;
+
+		matched_walk_fn = walk_fn;
 	}
+
+	if (!matched_walk_fn)
+		return -ENOENT;
 
 	return 0;
 }
@@ -897,9 +957,12 @@ static int revpt_rebuild_snapshot_locked(u64 *cpu_snapshot_pages,
 					 u64 *host_dma_snapshot_ptes,
 					 u32 *violation_total)
 {
+	u64 start_pfn = revpt_test_cfg.hpa_start >> PAGE_SHIFT;
+	u64 nr_pages = revpt_test_cfg.hpa_size >> PAGE_SHIFT;
 	int ret;
 
-	revpt_reset_all();
+	revpt_reset_range(start_pfn, nr_pages);
+	revpt_clear_violations();
 	*cpu_snapshot_pages = 0;
 	*host_dma_snapshot_ptes = 0;
 
@@ -911,8 +974,7 @@ static int revpt_rebuild_snapshot_locked(u64 *cpu_snapshot_pages,
 	if (ret)
 		return ret;
 
-	*violation_total = revpt_check_range(revpt_test_cfg.hpa_start >> PAGE_SHIFT,
-					     revpt_test_cfg.hpa_size >> PAGE_SHIFT);
+	*violation_total = revpt_check_range(start_pfn, nr_pages);
 	return 0;
 }
 
@@ -920,6 +982,8 @@ int __pkvm_revpt_start_test(const struct pkvm_asgard_test_cfg *cfg)
 {
 	u64 cpu_snapshot_pages, host_dma_snapshot_ptes;
 	u32 violations;
+	u64 old_start_pfn = 0, old_nr_pages = 0;
+	bool had_old_cfg;
 	int ret;
 
 	if (!cfg || cfg->reserved)
@@ -933,27 +997,35 @@ int __pkvm_revpt_start_test(const struct pkvm_asgard_test_cfg *cfg)
 		return -EINVAL;
 
 	host_lock_component();
-	revpt_test_cfg.active = false;
+	had_old_cfg = revpt_test_cfg.configured;
+	if (had_old_cfg) {
+		old_start_pfn = revpt_test_cfg.hpa_start >> PAGE_SHIFT;
+		old_nr_pages = revpt_test_cfg.hpa_size >> PAGE_SHIFT;
+	}
+
+	revpt_test_cfg.configured = true;
+	revpt_test_cfg.snapshot_valid = false;
 	revpt_test_cfg.hpa_start = cfg->hpa_start;
 	revpt_test_cfg.hpa_size = cfg->hpa_size;
 	revpt_test_cfg.host_dma_domain = cfg->host_dma_domain;
 
+	if (had_old_cfg &&
+	    (old_start_pfn != (cfg->hpa_start >> PAGE_SHIFT) ||
+	     old_nr_pages != (cfg->hpa_size >> PAGE_SHIFT)))
+		revpt_reset_range(old_start_pfn, old_nr_pages);
+
 	ret = revpt_lock_all_iopt_locked();
 	if (!ret) {
 		ret = revpt_rebuild_snapshot_locked(&cpu_snapshot_pages,
-						   &host_dma_snapshot_ptes,
-						   &violations);
+					   &host_dma_snapshot_ptes,
+					   &violations);
 		revpt_unlock_all_iopt_locked();
 	}
 	if (!ret)
-		revpt_test_cfg.active = true;
+		revpt_test_cfg.snapshot_valid = true;
 
 	host_unlock_component();
-
-	if (ret)
-		return ret;
-
-	return 0;
+	return ret;
 }
 
 int __pkvm_revpt_sync_test(void)
@@ -963,27 +1035,38 @@ int __pkvm_revpt_sync_test(void)
 	int ret;
 
 	host_lock_component();
-	if (!revpt_test_cfg.active) {
+	if (!revpt_test_cfg.configured) {
 		host_unlock_component();
 		return -EINVAL;
 	}
+	revpt_test_cfg.snapshot_valid = false;
 
 	ret = revpt_lock_all_iopt_locked();
 	if (!ret) {
 		ret = revpt_rebuild_snapshot_locked(&cpu_snapshot_pages,
-						   &host_dma_snapshot_ptes,
-						   &violations);
+					   &host_dma_snapshot_ptes,
+					   &violations);
 		revpt_unlock_all_iopt_locked();
 	}
+	if (!ret)
+		revpt_test_cfg.snapshot_valid = true;
 	host_unlock_component();
-	if (ret)
-		return ret;
 
-	return 0;
+	return ret;
 }
 
 int __pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
 				 u32 *copied, u32 *total)
 {
-	return revpt_copy_violations(out, cap, copied, total);
+	int ret;
+
+	host_lock_component();
+	if (!revpt_test_cfg.snapshot_valid) {
+		host_unlock_component();
+		return -EAGAIN;
+	}
+	ret = revpt_copy_violations(out, cap, copied, total);
+	host_unlock_component();
+
+	return ret;
 }

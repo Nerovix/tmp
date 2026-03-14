@@ -6,7 +6,8 @@
 #include <asm/page.h>
 
 struct revpt_test_cfg {
-	bool active;
+	bool configured;
+	bool snapshot_valid;
 	u64 hpa_start;
 	u64 hpa_size;
 	u32 host_dma_domain;

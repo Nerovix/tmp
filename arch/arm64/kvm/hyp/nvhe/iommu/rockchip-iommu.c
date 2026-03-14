@@ -1023,7 +1023,7 @@ static int rk_iommu_walk_iopt(unsigned int domain_id, pkvm_iopt_walk_cb_t cb,
 
 	if (domain_id >= RK_IOMMU_MAX_DOMAINS || !domains[domain_id] ||
 	    !domains[domain_id]->dt)
-		return -ENODEV;
+		return -ENOENT;
 
 	if (!rk_iommu_baseline_all_locked)
 		hyp_spin_lock(&domains[domain_id]->dt_lock);

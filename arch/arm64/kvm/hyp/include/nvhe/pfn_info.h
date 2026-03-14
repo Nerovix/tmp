@@ -90,7 +90,7 @@ enum revpt_violation_reason {
 
 #define REV_PT_NR_PAGES     ((u64)PMEM_SIZE >> PAGE_SHIFT)
 #define REV_PT_LOCK_STRIPES 4096U /* 必须是 2 的幂 */
-#define MAX_VIOLATE_NUM     1024
+#define MAX_VIOLATE_NUM     256
 
 /* 每个 PFN 的账本条目（紧凑 16B）。 */
 struct pfn_info {
@@ -129,6 +129,10 @@ extern struct violate_info violate_list[MAX_VIOLATE_NUM];
 int revpt_init(void);
 /* 清空全部 PFN 条目和违规记录，恢复到初始状态。 */
 void revpt_reset_all(void);
+/* 仅重置一段 PFN 的动态账本字段。 */
+void revpt_reset_range(u64 start_pfn, u64 nr_pages);
+/* 清空违规记录计数（不清空缓冲内容）。 */
+void revpt_clear_violations(void);
 
 /* 一致性检查接口。 */
 /* 检查单个 PFN 的账本一致性，返回违规原因位掩码（0 表示无违规）。 */

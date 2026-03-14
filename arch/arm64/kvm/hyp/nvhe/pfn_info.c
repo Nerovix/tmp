@@ -80,6 +80,49 @@ void revpt_reset_all(void)
 	raw_spin_unlock_irqrestore(&revpt_violate_lock, irqflags);
 }
 
+
+void revpt_clear_violations(void)
+{
+	unsigned long irqflags;
+
+	revpt_ensure_init();
+	raw_spin_lock_irqsave(&revpt_violate_lock, irqflags);
+	violate_num = 0;
+	raw_spin_unlock_irqrestore(&revpt_violate_lock, irqflags);
+}
+
+void revpt_reset_range(u64 start_pfn, u64 nr_pages)
+{
+	u64 i;
+
+	revpt_ensure_init();
+	if (!nr_pages)
+		return;
+	if (!revpt_pfn_valid(start_pfn) || nr_pages > REV_PT_NR_PAGES - start_pfn)
+		return;
+
+	for (i = 0; i < nr_pages; i++) {
+		u64 pfn = start_pfn + i;
+		unsigned long irqflags;
+		struct pfn_info *info = &rev_pt[pfn];
+		u16 static_flags;
+
+		raw_spin_lock_irqsave(revpt_lock_for_pfn(pfn), irqflags);
+		static_flags = info->flags &
+			(PFN_F_RAM | PFN_F_MMIO | PFN_F_SENSITIVE |
+			 PFN_F_MMU_PT | PFN_F_IOMMU_PT);
+		info->owner = OWN_FREE;
+		info->allowed_mask = 0;
+		info->flags = static_flags;
+		info->host_refs = 0;
+		info->host_dev_refs = 0;
+		info->enclave_refs = 0;
+		info->enclave_dev_refs = 0;
+		info->hyp_refs = 0;
+		info->generation++;
+		raw_spin_unlock_irqrestore(revpt_lock_for_pfn(pfn), irqflags);
+	}
+}
 /* 基于 owner 计算默认授权掩码。 */
 static inline u8 revpt_default_access_for_owner(u8 owner)
 {
