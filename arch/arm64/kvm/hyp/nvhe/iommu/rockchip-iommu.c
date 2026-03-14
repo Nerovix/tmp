@@ -1000,15 +1000,26 @@ static int get_all_domain_ids(unsigned int *domain_ids)
 	return domains_count;
 }
 
-static int get_iopt(unsigned int domain_id, u64 *iovas, u64 *pas, u64 *ptes,
-		    int cap, phys_addr_t phys_l, phys_addr_t phys_r)
+
+struct rk_iopt_export_ctx {
+	u64 *iovas;
+	u64 *pas;
+	u64 *ptes;
+	int cap;
+	int cnt;
+	phys_addr_t phys_l;
+	phys_addr_t phys_r;
+};
+
+static int rk_iommu_walk_iopt(unsigned int domain_id, pkvm_iopt_walk_cb_t cb,
+			      void *arg)
 {
-	phys_addr_t pt_phys, phys;
+	phys_addr_t pt_phys;
 	u32 dte, pte;
 	u32 *page_table;
 	size_t dte_index, pte_index;
 	const int NUM = SPAGE_SIZE / sizeof(u32);
-	int cnt = 0;
+	int ret = 0;
 
 	if (domain_id >= RK_IOMMU_MAX_DOMAINS || !domains[domain_id] ||
 	    !domains[domain_id]->dt)
@@ -1018,32 +1029,71 @@ static int get_iopt(unsigned int domain_id, u64 *iovas, u64 *pas, u64 *ptes,
 		hyp_spin_lock(&domains[domain_id]->dt_lock);
 	for (dte_index = 0; dte_index < NUM; dte_index++) {
 		dte = domains[domain_id]->dt[dte_index];
-		if (rk_dte_is_pt_valid(dte)) {
-			pt_phys = rk_dte_pt_address_v2(dte);
-			page_table = (u32 *)pa_to_va(pt_phys);
-			for (pte_index = 0; pte_index < NUM; pte_index++) {
-				pte = page_table[pte_index];
-				if (!rk_pte_is_page_valid(pte))
-					continue;
-				phys= rk_pte_page_address_v2(pte);
-				if(phys_l<=phys && phys<phys_r) {
-					if (cnt >= cap) {
-						cnt++;
-					} else {
-						iovas[cnt] = rk_dte_pte_to_iova(
-							dte_index, pte_index);
-						pas[cnt] = rk_pte_page_address_v2(pte);
-						ptes[cnt] = pte;
-						cnt++;
-					}
-				} 
-			}
+		if (!rk_dte_is_pt_valid(dte))
+			continue;
+
+		pt_phys = rk_dte_pt_address_v2(dte);
+		page_table = (u32 *)pa_to_va(pt_phys);
+		for (pte_index = 0; pte_index < NUM; pte_index++) {
+			u64 iova;
+			phys_addr_t pa;
+
+			pte = page_table[pte_index];
+			if (!rk_pte_is_page_valid(pte))
+				continue;
+
+			iova = rk_dte_pte_to_iova(dte_index, pte_index);
+			pa = rk_pte_page_address_v2(pte);
+			ret = cb(domain_id, iova, pa, pte, arg);
+			if (ret)
+				goto out;
 		}
 	}
-
+out:
 	if (!rk_iommu_baseline_all_locked)
 		hyp_spin_unlock(&domains[domain_id]->dt_lock);
-	return cnt;
+	return ret;
+}
+
+static int rk_iopt_export_cb(unsigned int domain_id, u64 iova,
+			     phys_addr_t pa, u64 pte, void *arg)
+{
+	struct rk_iopt_export_ctx *ctx = arg;
+
+	if (!(ctx->phys_l <= pa && pa < ctx->phys_r))
+		return 0;
+
+	if (ctx->cnt >= ctx->cap) {
+		ctx->cnt++;
+		return 0;
+	}
+
+	ctx->iovas[ctx->cnt] = iova;
+	ctx->pas[ctx->cnt] = pa;
+	ctx->ptes[ctx->cnt] = pte;
+	ctx->cnt++;
+	return 0;
+}
+
+static int get_iopt(unsigned int domain_id, u64 *iovas, u64 *pas, u64 *ptes,
+		    int cap, phys_addr_t phys_l, phys_addr_t phys_r)
+{
+	struct rk_iopt_export_ctx ctx = {
+		.iovas = iovas,
+		.pas = pas,
+		.ptes = ptes,
+		.cap = cap,
+		.cnt = 0,
+		.phys_l = phys_l,
+		.phys_r = phys_r,
+	};
+	int ret;
+
+	ret = rk_iommu_walk_iopt(domain_id, rk_iopt_export_cb, &ctx);
+	if (ret)
+		return ret;
+
+	return ctx.cnt;
 }
 
 const struct pkvm_iommu_ops pkvm_rockchip_iommu_ops = (struct pkvm_iommu_ops){
@@ -1064,5 +1114,6 @@ const struct pkvm_iommu_ops pkvm_rockchip_iommu_ops = (struct pkvm_iommu_ops){
 	.get_all_domain_ids = get_all_domain_ids,
 	.lock_all_domain_pts = rk_iommu_lock_all_domain_pts,
 	.unlock_all_domain_pts = rk_iommu_unlock_all_domain_pts,
+	.walk_iopt = rk_iommu_walk_iopt,
 	.get_iopt = get_iopt,
 };

@@ -859,67 +859,78 @@ void pkvm_iommu_host_stage2_idmap(phys_addr_t start, phys_addr_t end,
 
 
 
+
+struct revpt_iommu_walk_ctx {
+	enum revpt_ref_type type;
+};
+
+static int revpt_iommu_walk_cb(unsigned int domain_id, u64 iova,
+			       phys_addr_t pa, u64 pte, void *arg)
+{
+	struct revpt_iommu_walk_ctx *ctx = arg;
+	u64 pfn = pa >> PAGE_SHIFT;
+
+	(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
+	if (ctx->type == REVPT_REF_HOST_DMA)
+		(void)revpt_grant_access(pfn, ACC_HOST_DMA);
+	else
+		(void)revpt_grant_access(pfn, ACC_ENCLAVE_DMA);
+	(void)revpt_ref_inc(pfn, ctx->type);
+	return 0;
+}
+
+static int revpt_lock_all_iopt_locked(void)
+{
+	struct pkvm_iommu *dev;
+
+	list_for_each_entry (dev, &iommu_list, list) {
+		if (dev->ops->lock_all_domain_pts) {
+			int ret = dev->ops->lock_all_domain_pts(dev);
+			if (ret)
+				return ret;
+		}
+	}
+	return 0;
+}
+
+static void revpt_unlock_all_iopt_locked(void)
+{
+	struct pkvm_iommu *dev;
+
+	list_for_each_entry_reverse (dev, &iommu_list, list) {
+		if (dev->ops->unlock_all_domain_pts)
+			dev->ops->unlock_all_domain_pts(dev);
+	}
+}
+
 static int revpt_scan_iommu_locked(void)
 {
 	/*
 	 * I/O 页表基线扫描：
-	 * - 先尝试锁住所有 domain 的 I/O PT，尽量保证快照一致性。
-	 * - 按 domain_id 是否等于 revpt_host_dma_domain 区分 host/enclave DMA。
+	 * 由驱动 walker 回调逐条导出映射，不再使用旧 get_iopt 缓冲接口。
 	 */
 	struct pkvm_iommu *dev;
-	int ret = 0;
 
 	list_for_each_entry (dev, &iommu_list, list) {
 		unsigned int domain_ids[512];
-		u64 iovas[4096], pas[4096], ptes[4096];
 		int nr_domains, i;
 
-		if (!dev->ops->get_all_domain_ids || !dev->ops->get_iopt)
+		if (!dev->ops->get_all_domain_ids || !dev->ops->walk_iopt)
 			continue;
-
-		if (dev->ops->lock_all_domain_pts) {
-			ret = dev->ops->lock_all_domain_pts(dev);
-			if (ret)
-				return ret;
-		}
 
 		nr_domains = dev->ops->get_all_domain_ids(domain_ids);
 		for (i = 0; i < nr_domains; i++) {
-			enum revpt_ref_type type;
-			int cnt, j;
+			struct revpt_iommu_walk_ctx ctx = {
+				.type = (domain_ids[i] == revpt_host_dma_domain) ?
+					REVPT_REF_HOST_DMA : REVPT_REF_ENCLAVE_DMA,
+			};
+			int ret;
 
-			type = (domain_ids[i] == revpt_host_dma_domain) ?
-				REVPT_REF_HOST_DMA : REVPT_REF_ENCLAVE_DMA;
-
-			cnt = dev->ops->get_iopt(domain_ids[i], iovas, pas, ptes,
-						 ARRAY_SIZE(iovas), 0,
-						 (phys_addr_t)ULLONG_MAX);
-			if (cnt < 0) {
-				ret = cnt;
-				break;
-			}
-			if (cnt > ARRAY_SIZE(iovas)) {
-				/* 快照缓冲不足时直接报错，避免静默丢失映射。 */
-				ret = -E2BIG;
-				break;
-			}
-
-			for (j = 0; j < cnt; j++) {
-				u64 pfn = pas[j] >> PAGE_SHIFT;
-				(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
-				if (type == REVPT_REF_HOST_DMA)
-					(void)revpt_grant_access(pfn, ACC_HOST_DMA);
-				else
-					(void)revpt_grant_access(pfn, ACC_ENCLAVE_DMA);
-				(void)revpt_ref_inc(pfn, type);
-			}
+			ret = dev->ops->walk_iopt(domain_ids[i], revpt_iommu_walk_cb,
+						  &ctx);
+			if (ret)
+				return ret;
 		}
-
-		if (dev->ops->unlock_all_domain_pts)
-			dev->ops->unlock_all_domain_pts(dev);
-
-		if (ret)
-			return ret;
 	}
 
 	return 0;
@@ -951,9 +962,14 @@ int __pkvm_revpt_capture_baseline(void)
 	int ret;
 
 	host_lock_component();
-	ret = revpt_capture_cpu_baseline_locked();
-	if (!ret)
-		ret = revpt_scan_iommu_locked();
+	ret = revpt_lock_all_iopt_locked();
+	if (!ret) {
+		/* 先锁住 CPU+IO 页表，再统一遍历，减少时序窗口。 */
+		ret = revpt_capture_cpu_baseline_locked();
+		if (!ret)
+			ret = revpt_scan_iommu_locked();
+		revpt_unlock_all_iopt_locked();
+	}
 	host_unlock_component();
 
 	return ret;

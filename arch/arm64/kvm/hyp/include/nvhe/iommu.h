@@ -9,6 +9,8 @@
 #include <nvhe/mem_protect.h>
 
 struct pkvm_iommu;
+typedef int (*pkvm_iopt_walk_cb_t)(unsigned int domain_id, u64 iova,
+				     phys_addr_t pa, u64 pte, void *arg);
 
 struct pkvm_iommu_ops {
 	/*
@@ -89,6 +91,11 @@ struct pkvm_iommu_ops {
 	int (*lock_all_domain_pts)(struct pkvm_iommu *dev);
 	void (*unlock_all_domain_pts)(struct pkvm_iommu *dev);
 
+	/* 新接口：由驱动内部遍历 I/O 页表并通过回调导出映射。 */
+	int (*walk_iopt)(unsigned int domain_id, pkvm_iopt_walk_cb_t cb,
+			 void *arg);
+
+	/* 旧接口（保留兼容，不用于 baseline 抓取）。 */
 	int (*get_iopt)(unsigned int domain_id, u64 *iova, u64 *pas, u64 *ptes,
 			int cap, phys_addr_t phys_l, phys_addr_t phys_r);
 
