@@ -249,7 +249,6 @@ static u32 __revpt_check_snapshot(u64 pfn, const struct pfn_info *info)
 u32 revpt_check_pfn(u64 pfn)
 {
 	unsigned long irqflags;
-	struct pfn_info snapshot;
 	u32 reason;
 
 	revpt_ensure_init();
@@ -317,7 +316,6 @@ static int __revpt_update_owner(u64 pfn, enum page_owner owner)
 	info->generation++;
 	raw_spin_unlock_irqrestore(revpt_lock_for_pfn(pfn), irqflags);
 
-	(void)revpt_check_pfn(pfn);
 	return 0;
 }
 
@@ -363,7 +361,6 @@ void make_exclusively_owned(u64 pfn)
 	info->generation++;
 	raw_spin_unlock_irqrestore(revpt_lock_for_pfn(pfn), irqflags);
 
-	(void)revpt_check_pfn(pfn);
 }
 
 void make_shared(u64 pfn)
@@ -382,7 +379,6 @@ void make_shared(u64 pfn)
 	info->generation++;
 	raw_spin_unlock_irqrestore(revpt_lock_for_pfn(pfn), irqflags);
 
-	(void)revpt_check_pfn(pfn);
 }
 
 int revpt_grant_access(u64 pfn, u8 access_mask)
@@ -403,7 +399,6 @@ int revpt_grant_access(u64 pfn, u8 access_mask)
 	info->generation++;
 	raw_spin_unlock_irqrestore(revpt_lock_for_pfn(pfn), irqflags);
 
-	(void)revpt_check_pfn(pfn);
 	return 0;
 }
 
@@ -427,7 +422,6 @@ int revpt_revoke_access(u64 pfn, u8 access_mask)
 	info->generation++;
 	raw_spin_unlock_irqrestore(revpt_lock_for_pfn(pfn), irqflags);
 
-	(void)revpt_check_pfn(pfn);
 	return 0;
 }
 
@@ -478,7 +472,6 @@ int revpt_set_flags(u64 pfn, u16 set_mask, u16 clear_mask)
 	info->generation++;
 	raw_spin_unlock_irqrestore(revpt_lock_for_pfn(pfn), irqflags);
 
-	(void)revpt_check_pfn(pfn);
 	return 0;
 }
 
@@ -519,7 +512,6 @@ int revpt_snapshot_pfn(u64 pfn, struct pfn_info *out)
 static int __revpt_change_ref(u64 pfn, enum revpt_ref_type type, bool inc)
 {
 	unsigned long irqflags;
-	struct pfn_info snapshot;
 	struct pfn_info *info;
 	u16 *slot;
 	u32 reason = 0;
@@ -554,13 +546,8 @@ static int __revpt_change_ref(u64 pfn, enum revpt_ref_type type, bool inc)
 		}
 	}
 
-	snapshot = *info;
 	raw_spin_unlock_irqrestore(revpt_lock_for_pfn(pfn), irqflags);
 
-	if (reason)
-		revpt_record_violation(pfn, &snapshot, reason);
-
-	(void)revpt_check_pfn(pfn);
 	return reason ? -ERANGE : 0;
 }
 
@@ -743,17 +730,4 @@ int revpt_copy_violations(struct pkvm_asgard_violation *out, u32 cap, u32 *copie
 	raw_spin_unlock_irqrestore(&revpt_violate_lock, irqflags);
 
 	return 0;
-}
-
-/* 全量复扫：用于测试命令触发一次“立即一致性检查”。 */
-void revpt_force_rescan(void)
-{
-	u64 i;
-
-	revpt_ensure_init();
-	for (i = 0; i < REV_PT_NR_PAGES; i++) {
-		if (!(READ_ONCE(rev_pt[i].flags) & PFN_F_TRACKED))
-			continue;
-		(void)revpt_check_pfn(i);
-	}
 }

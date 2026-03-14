@@ -13,19 +13,15 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
 			      unsigned long arg)
 {
 	switch (cmd) {
-	case PKVM_ASGARD_IOC_SET_HOST_DMA_DOMAIN: {
-		u32 domain;
+	case PKVM_ASGARD_IOC_START_TEST: {
+		struct pkvm_asgard_test_cfg cfg;
 
-		if (copy_from_user(&domain, (void __user *)arg, sizeof(domain)))
+		if (copy_from_user(&cfg, (void __user *)arg, sizeof(cfg)))
 			return -EFAULT;
-		return pkvm_revpt_set_host_dma_domain(domain);
+		return pkvm_revpt_start_test(&cfg);
 	}
-	case PKVM_ASGARD_IOC_RECHECK_LEDGER:
-		/* 保留全量复检能力（旧 sync 语义）。 */
-		return pkvm_revpt_sync();
-	case PKVM_ASGARD_IOC_CAPTURE_BASELINE:
-		/* 新语义：锁定时刻并重建 rev_pt 初始状态（来自页表遍历）。 */
-		return pkvm_revpt_capture_baseline();
+	case PKVM_ASGARD_IOC_SYNC_TEST:
+		return pkvm_revpt_sync_test();
 	case PKVM_ASGARD_IOC_GET_VIOLATIONS: {
 		/* 从 EL2 拿快照，再拷回用户态。 */
 		struct pkvm_asgard_violation_query q;

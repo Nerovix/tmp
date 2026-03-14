@@ -100,10 +100,9 @@ enum __kvm_host_smccc_func {
 	__KVM_HOST_SMCCC_FUNC___pkvm_stage2_pt_count,
 	__KVM_HOST_SMCCC_FUNC___pkvm_get_shadow_handles,
 	__KVM_HOST_SMCCC_FUNC___pkvm_view_iopt,
-	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_set_host_dma_domain,
-	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_sync,
+	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_start_test,
+	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_sync_test,
 	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_get_violations,
-	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_capture_baseline,
 
 };
 

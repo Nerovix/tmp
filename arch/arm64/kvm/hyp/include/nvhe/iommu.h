@@ -154,11 +154,10 @@ int __pkvm_view_iopt(unsigned int domain_id, u64 *ipas, u64 *pas, u64 *ptes,
 extern const struct pkvm_iommu_ops pkvm_s2mpu_ops;
 extern const struct pkvm_iommu_ops pkvm_sysmmu_sync_ops;
 
-int __pkvm_revpt_set_host_dma_domain(unsigned int domain_id);
-int __pkvm_revpt_sync(void);
+int __pkvm_revpt_start_test(const struct pkvm_asgard_test_cfg *cfg);
+int __pkvm_revpt_sync_test(void);
 int __pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
 				 u32 *copied, u32 *total);
-int __pkvm_revpt_capture_baseline(void);
 
 extern const struct pkvm_iommu_ops pkvm_rockchip_iommu_ops;
 

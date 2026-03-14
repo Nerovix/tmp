@@ -42,9 +42,6 @@ static DEFINE_HYP_SPINLOCK(iommu_registration_lock);
 static void *iommu_mem_pool;
 static size_t iommu_mem_remaining;
 
-/* 由 userspace 显式指定：哪个 domain_id 代表 host DMA。 */
-static unsigned int revpt_host_dma_domain = UINT_MAX;
-
 static void assert_host_component_locked(void)
 {
 	hyp_assert_lock_held(&host_kvm.lock);
@@ -552,9 +549,6 @@ int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
 		     phys_addr_t paddr, size_t size, int prot)
 {
 	struct pkvm_iommu *dev;
-	enum revpt_ref_type type;
-	u64 pfn = paddr >> PAGE_SHIFT;
-	u64 pages = PAGE_ALIGN(size) >> PAGE_SHIFT;
 	int ret;
 
 	assert_host_component_locked();
@@ -567,52 +561,22 @@ int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
 			return ret;
 	}
 
-	/*
-	 * 这里把 IOMMU 映射变更同步到测试账本：
-	 * - 先用外部工具设置 host DMA domain_id
-	 * - 该 domain 记为 HOST_DMA，其余按 ENCLAVE_DMA 记账
-	 */
-	type = (domain_id == revpt_host_dma_domain) ? REVPT_REF_HOST_DMA :
-						      REVPT_REF_ENCLAVE_DMA;
-	if (pages) {
-		(void)revpt_ref_inc_range(pfn, pages, type);
-		/* 立即触发区间检查，避免把违规延后到离线阶段才暴露。 */
-		(void)revpt_check_range(pfn, pages);
-	}
-
 	return ret;
 }
 
-// pt-checked
 size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
 		  size_t size)
 {
 	struct pkvm_iommu *dev;
-	enum revpt_ref_type type;
-	phys_addr_t paddr;
-	u64 pages = PAGE_ALIGN(size) >> PAGE_SHIFT;
 	size_t ret;
 
 	assert_host_component_locked();
-
-	/*
-	 * 先快照旧映射，再执行 unmap：
-	 * 这样可以正确把旧 PFN 的 DMA 引用计数减回去。
-	 */
-	paddr = __pkvm_iommu_iova_to_phys(domain_id, iova);
 
 	list_for_each_entry (dev, &iommu_list, list) {
 		ret = dev->ops->unmap ? dev->ops->unmap(domain_id, iova, size) :
 					0;
 		if (ret)
 			return ret;
-	}
-
-	type = (domain_id == revpt_host_dma_domain) ? REVPT_REF_HOST_DMA :
-						      REVPT_REF_ENCLAVE_DMA;
-	if (pages && paddr) {
-		(void)revpt_ref_dec_range(paddr >> PAGE_SHIFT, pages, type);
-		(void)revpt_check_range(paddr >> PAGE_SHIFT, pages);
 	}
 
 	return ret;
@@ -861,21 +825,27 @@ void pkvm_iommu_host_stage2_idmap(phys_addr_t start, phys_addr_t end,
 
 
 struct revpt_iommu_walk_ctx {
-	enum revpt_ref_type type;
+	u64 *host_dma_snapshot_ptes;
 };
 
 static int revpt_iommu_walk_cb(unsigned int domain_id, u64 iova,
 			       phys_addr_t pa, u64 pte, void *arg)
 {
 	struct revpt_iommu_walk_ctx *ctx = arg;
-	u64 pfn = pa >> PAGE_SHIFT;
+	u64 clip_pfn, clip_pages;
+	u64 i;
 
-	(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
-	if (ctx->type == REVPT_REF_HOST_DMA)
-		(void)revpt_grant_access(pfn, ACC_HOST_DMA);
-	else
-		(void)revpt_grant_access(pfn, ACC_ENCLAVE_DMA);
-	(void)revpt_ref_inc(pfn, ctx->type);
+	if (!revpt_pa_overlap_enabled(pa, PAGE_SIZE, &clip_pfn, &clip_pages))
+		return 0;
+
+	for (i = 0; i < clip_pages; i++) {
+		u64 pfn = clip_pfn + i;
+
+		(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
+		(void)revpt_ref_inc(pfn, REVPT_REF_HOST_DMA);
+		(*ctx->host_dma_snapshot_ptes)++;
+	}
+
 	return 0;
 }
 
@@ -903,51 +873,112 @@ static void revpt_unlock_all_iopt_locked(void)
 	}
 }
 
-static int revpt_scan_iommu_locked(void)
+static int revpt_scan_iommu_locked(u64 *host_dma_snapshot_ptes)
 {
-	/*
-	 * I/O 页表基线扫描：
-	 * 由驱动 walker 回调逐条导出映射，不再使用旧 get_iopt 缓冲接口。
-	 */
 	struct pkvm_iommu *dev;
 
 	list_for_each_entry (dev, &iommu_list, list) {
-		unsigned int domain_ids[512];
-		int nr_domains, i;
+		struct revpt_iommu_walk_ctx ctx = {
+			.host_dma_snapshot_ptes = host_dma_snapshot_ptes,
+		};
 
-		if (!dev->ops->get_all_domain_ids || !dev->ops->walk_iopt)
+		if (!dev->ops->walk_iopt)
 			continue;
 
-		nr_domains = dev->ops->get_all_domain_ids(domain_ids);
-		for (i = 0; i < nr_domains; i++) {
-			struct revpt_iommu_walk_ctx ctx = {
-				.type = (domain_ids[i] == revpt_host_dma_domain) ?
-					REVPT_REF_HOST_DMA : REVPT_REF_ENCLAVE_DMA,
-			};
-			int ret;
-
-			ret = dev->ops->walk_iopt(domain_ids[i], revpt_iommu_walk_cb,
-						  &ctx);
-			if (ret)
-				return ret;
-		}
+		if (dev->ops->walk_iopt(revpt_test_cfg.host_dma_domain,
+					revpt_iommu_walk_cb, &ctx))
+			continue;
 	}
 
 	return 0;
 }
 
-int __pkvm_revpt_set_host_dma_domain(unsigned int domain_id)
+static int revpt_rebuild_snapshot_locked(u64 *cpu_snapshot_pages,
+					 u64 *host_dma_snapshot_ptes,
+					 u32 *violation_total)
 {
-	host_lock_component();
-	revpt_host_dma_domain = domain_id;
-	host_unlock_component();
+	int ret;
+
+	revpt_reset_all();
+	*cpu_snapshot_pages = 0;
+	*host_dma_snapshot_ptes = 0;
+
+	ret = revpt_capture_cpu_baseline_locked(cpu_snapshot_pages);
+	if (ret)
+		return ret;
+
+	ret = revpt_scan_iommu_locked(host_dma_snapshot_ptes);
+	if (ret)
+		return ret;
+
+	*violation_total = revpt_check_range(revpt_test_cfg.hpa_start >> PAGE_SHIFT,
+					     revpt_test_cfg.hpa_size >> PAGE_SHIFT);
 	return 0;
 }
 
-int __pkvm_revpt_sync(void)
+int __pkvm_revpt_start_test(const struct pkvm_asgard_test_cfg *cfg)
 {
-	/* 主动全量复扫：用于板端测试命令触发“重新爬取元数据”。 */
-	revpt_force_rescan();
+	u64 cpu_snapshot_pages, host_dma_snapshot_ptes;
+	u32 violations;
+	int ret;
+
+	if (!cfg || cfg->reserved)
+		return -EINVAL;
+	if (!PAGE_ALIGNED(cfg->hpa_start) || !PAGE_ALIGNED(cfg->hpa_size) ||
+	    !cfg->hpa_size)
+		return -EINVAL;
+	if ((cfg->hpa_start >> PAGE_SHIFT) >= REV_PT_NR_PAGES ||
+	    (cfg->hpa_size >> PAGE_SHIFT) > REV_PT_NR_PAGES -
+		(cfg->hpa_start >> PAGE_SHIFT))
+		return -EINVAL;
+
+	host_lock_component();
+	revpt_test_cfg.active = false;
+	revpt_test_cfg.hpa_start = cfg->hpa_start;
+	revpt_test_cfg.hpa_size = cfg->hpa_size;
+	revpt_test_cfg.host_dma_domain = cfg->host_dma_domain;
+
+	ret = revpt_lock_all_iopt_locked();
+	if (!ret) {
+		ret = revpt_rebuild_snapshot_locked(&cpu_snapshot_pages,
+						   &host_dma_snapshot_ptes,
+						   &violations);
+		revpt_unlock_all_iopt_locked();
+	}
+	if (!ret)
+		revpt_test_cfg.active = true;
+
+	host_unlock_component();
+
+	if (ret)
+		return ret;
+
+	return 0;
+}
+
+int __pkvm_revpt_sync_test(void)
+{
+	u64 cpu_snapshot_pages, host_dma_snapshot_ptes;
+	u32 violations;
+	int ret;
+
+	host_lock_component();
+	if (!revpt_test_cfg.active) {
+		host_unlock_component();
+		return -EINVAL;
+	}
+
+	ret = revpt_lock_all_iopt_locked();
+	if (!ret) {
+		ret = revpt_rebuild_snapshot_locked(&cpu_snapshot_pages,
+						   &host_dma_snapshot_ptes,
+						   &violations);
+		revpt_unlock_all_iopt_locked();
+	}
+	host_unlock_component();
+	if (ret)
+		return ret;
+
 	return 0;
 }
 
@@ -955,22 +986,4 @@ int __pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
 				 u32 *copied, u32 *total)
 {
 	return revpt_copy_violations(out, cap, copied, total);
-}
-
-int __pkvm_revpt_capture_baseline(void)
-{
-	int ret;
-
-	host_lock_component();
-	ret = revpt_lock_all_iopt_locked();
-	if (!ret) {
-		/* 先锁住 CPU+IO 页表，再统一遍历，减少时序窗口。 */
-		ret = revpt_capture_cpu_baseline_locked();
-		if (!ret)
-			ret = revpt_scan_iommu_locked();
-		revpt_unlock_all_iopt_locked();
-	}
-	host_unlock_component();
-
-	return ret;
 }

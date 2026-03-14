@@ -189,7 +189,5 @@ int revpt_bootstrap_mmio_range(u64 start_pfn, u64 nr_pages);
 /* 导出违规记录给 host。 */
 int revpt_copy_violations(struct pkvm_asgard_violation *out, u32 cap, u32 *copied,
 			 u32 *total);
-/* 触发一次全量检查。 */
-void revpt_force_rescan(void);
 
 #endif /* __ARM64_KVM_NVHE_PFN_INFO_H__ */

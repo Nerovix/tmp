@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
+#include <linux/kernel.h>
 #include <linux/kvm_host.h>
 
 #include <nvhe/mem_protect.h>
@@ -8,9 +9,12 @@
 #include <nvhe/pkvm.h>
 #include <nvhe/revpt_baseline.h>
 
+struct revpt_test_cfg revpt_test_cfg;
+
 struct revpt_baseline_walk_ctx {
 	enum page_owner owner;
 	enum revpt_ref_type ref_type;
+	u64 *cpu_snapshot_pages;
 };
 
 static inline phys_addr_t revpt_stage2_pte_phys(kvm_pte_t pte)
@@ -18,35 +22,48 @@ static inline phys_addr_t revpt_stage2_pte_phys(kvm_pte_t pte)
 	return (phys_addr_t)(pte & KVM_PTE_ADDR_MASK);
 }
 
+bool revpt_pa_overlap_enabled(phys_addr_t pa, u64 size,
+			      u64 *clip_pfn, u64 *clip_pages)
+{
+	u64 range_start, range_end, ent_start, ent_end;
+
+	if (!size || !revpt_test_cfg.hpa_size)
+		return false;
+
+	range_start = revpt_test_cfg.hpa_start;
+	range_end = range_start + revpt_test_cfg.hpa_size;
+	ent_start = pa;
+	ent_end = ent_start + size;
+
+	if (ent_end <= range_start || ent_start >= range_end)
+		return false;
+
+	ent_start = max(ent_start, range_start);
+	ent_end = min(ent_end, range_end);
+	if (ent_end <= ent_start)
+		return false;
+
+	*clip_pfn = ent_start >> PAGE_SHIFT;
+	*clip_pages = (ent_end - ent_start) >> PAGE_SHIFT;
+	return *clip_pages != 0;
+}
+
 static int revpt_track_mapping_range(u64 pfn, u64 nr_pages,
-				      enum page_owner owner,
-				      enum revpt_ref_type ref_type)
+			      enum page_owner owner,
+			      enum revpt_ref_type ref_type,
+			      u64 *cpu_snapshot_pages)
 {
 	u64 i;
 
 	for (i = 0; i < nr_pages; i++) {
 		u64 cur = pfn + i;
-		struct pfn_info info;
 
-		if (revpt_snapshot_pfn(cur, &info)) {
-			/* 首次出现的 PFN：建立追踪并设置默认 owner。 */
-			(void)revpt_set_flags(cur, PFN_F_TRACKED | PFN_F_RAM, 0);
-			(void)revpt_set_owner(cur, owner);
-		} else if (!(info.flags & PFN_F_TRACKED)) {
-			(void)revpt_set_flags(cur, PFN_F_TRACKED | PFN_F_RAM, 0);
-			(void)revpt_set_owner(cur, owner);
-		} else if (info.owner != owner) {
-			/* 多主体同时可达：保持当前 owner，仅补齐授权。 */
-			if (owner == OWN_HOST)
-				(void)revpt_grant_access(cur, ACC_HOST_CPU);
-			else if (owner == OWN_ENCLAVE)
-				(void)revpt_grant_access(cur, ACC_ENCLAVE_CPU);
-			else if (owner == OWN_HYP)
-				(void)revpt_grant_access(cur, ACC_HYP_CPU);
-		}
+		(void)revpt_set_flags(cur, PFN_F_TRACKED | PFN_F_RAM, 0);
+		(void)revpt_set_owner(cur, owner);
+		(void)revpt_ref_inc(cur, ref_type);
+		(*cpu_snapshot_pages)++;
 	}
 
-	(void)revpt_ref_inc_range(pfn, nr_pages, ref_type);
 	return 0;
 }
 
@@ -57,63 +74,66 @@ static int revpt_stage2_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
 	struct revpt_baseline_walk_ctx *ctx = arg;
 	kvm_pte_t pte = READ_ONCE(*ptep);
 	phys_addr_t pa;
-	u64 pages;
+	u64 clip_pfn, clip_pages;
 
 	if (!kvm_pte_valid(pte))
 		return 0;
 
 	pa = revpt_stage2_pte_phys(pte);
-	pages = (end - start) >> PAGE_SHIFT;
-	if (!pages)
+	if (!revpt_pa_overlap_enabled(pa, end - start, &clip_pfn, &clip_pages))
 		return 0;
 
-	return revpt_track_mapping_range(pa >> PAGE_SHIFT, pages, ctx->owner,
-					 ctx->ref_type);
+	return revpt_track_mapping_range(clip_pfn, clip_pages, ctx->owner,
+					 ctx->ref_type,
+					 ctx->cpu_snapshot_pages);
 }
 
 static int revpt_hyp_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
 			     enum kvm_pgtable_walk_flags flags,
 			     void *arg)
 {
+	struct revpt_baseline_walk_ctx *ctx = arg;
 	kvm_pte_t pte = READ_ONCE(*ptep);
 	phys_addr_t pa;
-	u64 pages;
+	u64 clip_pfn, clip_pages;
 
 	if (!kvm_pte_valid(pte))
 		return 0;
 
 	pa = (phys_addr_t)(pte & KVM_PTE_ADDR_MASK);
-	pages = (end - start) >> PAGE_SHIFT;
-	if (!pages)
+	if (!revpt_pa_overlap_enabled(pa, end - start, &clip_pfn, &clip_pages))
 		return 0;
 
-	return revpt_track_mapping_range(pa >> PAGE_SHIFT, pages,
-					 OWN_HYP, REVPT_REF_HYP_CPU);
+	return revpt_track_mapping_range(clip_pfn, clip_pages,
+					 OWN_HYP, REVPT_REF_HYP_CPU,
+					 ctx->cpu_snapshot_pages);
 }
 
-int revpt_capture_cpu_baseline_locked(void)
+int revpt_capture_cpu_baseline_locked(u64 *cpu_snapshot_pages)
 {
 	struct revpt_baseline_walk_ctx host_ctx = {
 		.owner = OWN_HOST,
 		.ref_type = REVPT_REF_HOST_CPU,
+		.cpu_snapshot_pages = cpu_snapshot_pages,
 	};
 	struct kvm_pgtable_walker host_walker = {
 		.cb = revpt_stage2_walk_cb,
 		.arg = &host_ctx,
 		.flags = KVM_PGTABLE_WALK_LEAF,
 	};
+	struct revpt_baseline_walk_ctx hyp_ctx = {
+		.owner = OWN_HYP,
+		.ref_type = REVPT_REF_HYP_CPU,
+		.cpu_snapshot_pages = cpu_snapshot_pages,
+	};
 	struct kvm_pgtable_walker hyp_walker = {
 		.cb = revpt_hyp_walk_cb,
-		.arg = NULL,
+		.arg = &hyp_ctx,
 		.flags = KVM_PGTABLE_WALK_LEAF,
 	};
 	struct kvm_shadow_vm *locked_vms[KVM_MAX_PVMS];
 	int i, nr_locked = 0, ret;
 
-	/*
-	 * 为了尽量保证“初始状态”一致性：
-	 * 先拿齐所有相关页表锁，再统一遍历。
-	 */
 	hyp_spin_lock(&pkvm_pgd_lock);
 	for (i = 0; i < KVM_MAX_PVMS; i++) {
 		struct kvm_shadow_vm *vm;
@@ -124,9 +144,6 @@ int revpt_capture_cpu_baseline_locked(void)
 		hyp_spin_lock(&vm->lock);
 		locked_vms[nr_locked++] = vm;
 	}
-
-	/* 新语义：从页表快照重建 rev_pt 起始状态。 */
-	revpt_reset_all();
 
 	ret = kvm_pgtable_walk(&pkvm_pgtable, 0, BIT(pkvm_pgtable.ia_bits),
 			       &hyp_walker);
@@ -142,6 +159,7 @@ int revpt_capture_cpu_baseline_locked(void)
 		struct revpt_baseline_walk_ctx guest_ctx = {
 			.owner = OWN_ENCLAVE,
 			.ref_type = REVPT_REF_ENCLAVE_CPU,
+			.cpu_snapshot_pages = cpu_snapshot_pages,
 		};
 		struct kvm_pgtable_walker guest_walker = {
 			.cb = revpt_stage2_walk_cb,

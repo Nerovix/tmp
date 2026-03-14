@@ -10,10 +10,22 @@
 static void print_reason(uint32_t r)
 {
 	printf("reason=0x%x", r);
+	if (r & (1u << 1))
+		printf(" UNTRACKED_HAS_STATE");
+	if (r & (1u << 2))
+		printf(" FREE_HAS_ACCESS");
+	if (r & (1u << 3))
+		printf(" FREE_HAS_REFS");
+	if (r & (1u << 8))
+		printf(" HOST_CPU_DISALLOWED");
 	if (r & (1u << 9))
 		printf(" HOST_DMA_DISALLOWED");
+	if (r & (1u << 10))
+		printf(" ENCL_CPU_DISALLOWED");
 	if (r & (1u << 11))
 		printf(" ENCL_DMA_DISALLOWED");
+	if (r & (1u << 12))
+		printf(" HYP_CPU_DISALLOWED");
 	if (r & (1u << 5))
 		printf(" SENSITIVE_BAD_OWNER");
 	if (r & (1u << 7))
@@ -21,7 +33,6 @@ static void print_reason(uint32_t r)
 	putchar('\n');
 }
 
-/* 用途：板端直接运行的最小测试工具。 */
 int main(int argc, char **argv)
 {
 	struct pkvm_asgard_violation_query q = {0};
@@ -54,9 +65,17 @@ int main(int argc, char **argv)
 
 	printf("copied=%u total=%u\n", q.copied, q.total);
 	for (i = 0; i < q.copied; i++) {
-		printf("[%u] pfn=0x%llx owner=%u host_dma_ref=%u encl_dma_ref=%u ",
-		       i, (unsigned long long)buf[i].pfn, buf[i].info.owner,
-		       buf[i].info.host_dev_refs, buf[i].info.enclave_dev_refs);
+		printf("[%u] pfn=0x%llx owner=%u allowed=0x%x flags=0x%x host_refs=%u host_dev_refs=%u enclave_refs=%u enclave_dev_refs=%u hyp_refs=%u generation=%u ",
+		       i, (unsigned long long)buf[i].pfn,
+		       buf[i].info.owner,
+		       buf[i].info.allowed_mask,
+		       buf[i].info.flags,
+		       buf[i].info.host_refs,
+		       buf[i].info.host_dev_refs,
+		       buf[i].info.enclave_refs,
+		       buf[i].info.enclave_dev_refs,
+		       buf[i].info.hyp_refs,
+		       buf[i].info.generation);
 		print_reason(buf[i].reason);
 	}
 

@@ -167,17 +167,17 @@ int pkvm_iommu_rk_disable(unsigned int iommu_id)
 }
 EXPORT_SYMBOL_GPL(pkvm_iommu_rk_disable);
 
-int pkvm_revpt_set_host_dma_domain(unsigned int domain_id)
+int pkvm_revpt_start_test(const struct pkvm_asgard_test_cfg *cfg)
 {
-	return kvm_call_hyp_nvhe(__pkvm_revpt_set_host_dma_domain, domain_id);
+	return kvm_call_hyp_nvhe(__pkvm_revpt_start_test, cfg);
 }
-EXPORT_SYMBOL_GPL(pkvm_revpt_set_host_dma_domain);
+EXPORT_SYMBOL_GPL(pkvm_revpt_start_test);
 
-int pkvm_revpt_sync(void)
+int pkvm_revpt_sync_test(void)
 {
-	return kvm_call_hyp_nvhe(__pkvm_revpt_sync);
+	return kvm_call_hyp_nvhe(__pkvm_revpt_sync_test);
 }
-EXPORT_SYMBOL_GPL(pkvm_revpt_sync);
+EXPORT_SYMBOL_GPL(pkvm_revpt_sync_test);
 
 int pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
 			      u32 *copied, u32 *total)
@@ -186,9 +186,3 @@ int pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
 				 total);
 }
 EXPORT_SYMBOL_GPL(pkvm_revpt_get_violations);
-
-int pkvm_revpt_capture_baseline(void)
-{
-	return kvm_call_hyp_nvhe(__pkvm_revpt_capture_baseline);
-}
-EXPORT_SYMBOL_GPL(pkvm_revpt_capture_baseline);

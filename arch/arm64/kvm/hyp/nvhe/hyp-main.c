@@ -1467,16 +1467,25 @@ out:
 }
 
 
-static void handle___pkvm_revpt_set_host_dma_domain(struct kvm_cpu_context *host_ctxt)
-{
-	DECLARE_REG(unsigned int, domain_id, host_ctxt, 1);
 
-	cpu_reg(host_ctxt, 1) = __pkvm_revpt_set_host_dma_domain(domain_id);
+static void handle___pkvm_revpt_start_test(struct kvm_cpu_context *host_ctxt)
+{
+	DECLARE_REG(struct pkvm_asgard_test_cfg *, cfg_hva, host_ctxt, 1);
+	struct pkvm_asgard_test_cfg *cfg = kern_hyp_va(cfg_hva);
+	int ret;
+
+	ret = hyp_pin_shared_mem((u8 *)cfg, (u8 *)cfg + sizeof(*cfg));
+	if (!ret) {
+		ret = __pkvm_revpt_start_test(cfg);
+		hyp_unpin_shared_mem((u8 *)cfg, (u8 *)cfg + sizeof(*cfg));
+	}
+
+	cpu_reg(host_ctxt, 1) = ret;
 }
 
-static void handle___pkvm_revpt_sync(struct kvm_cpu_context *host_ctxt)
+static void handle___pkvm_revpt_sync_test(struct kvm_cpu_context *host_ctxt)
 {
-	cpu_reg(host_ctxt, 1) = __pkvm_revpt_sync();
+	cpu_reg(host_ctxt, 1) = __pkvm_revpt_sync_test();
 }
 
 static void handle___pkvm_revpt_get_violations(struct kvm_cpu_context *host_ctxt)
@@ -1515,11 +1524,6 @@ out:
 	cpu_reg(host_ctxt, 1) = ret;
 }
 
-
-static void handle___pkvm_revpt_capture_baseline(struct kvm_cpu_context *host_ctxt)
-{
-	cpu_reg(host_ctxt, 1) = __pkvm_revpt_capture_baseline();
-}
 
 typedef void (*hcall_t)(struct kvm_cpu_context *);
 
@@ -1575,10 +1579,9 @@ static const hcall_t host_hcall[] = {
 	HANDLE_FUNC(__pkvm_stage2_pt_count),
 	HANDLE_FUNC(__pkvm_get_shadow_handles),
 	HANDLE_FUNC(__pkvm_view_iopt),
-	HANDLE_FUNC(__pkvm_revpt_set_host_dma_domain),
-	HANDLE_FUNC(__pkvm_revpt_sync),
+	HANDLE_FUNC(__pkvm_revpt_start_test),
+	HANDLE_FUNC(__pkvm_revpt_sync_test),
 	HANDLE_FUNC(__pkvm_revpt_get_violations),
-	HANDLE_FUNC(__pkvm_revpt_capture_baseline),
 };
 
 static inline u64 kernel__text_addr(void)

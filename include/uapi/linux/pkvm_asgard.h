@@ -34,13 +34,17 @@ struct pkvm_asgard_violation_query {
 	__u32 reserved;
 };
 
+struct pkvm_asgard_test_cfg {
+	__u64 hpa_start;
+	__u64 hpa_size;
+	__u32 host_dma_domain;
+	__u32 reserved;
+};
+
 #define PKVM_ASGARD_IOC_MAGIC 'P'
-#define PKVM_ASGARD_IOC_SET_HOST_DMA_DOMAIN \
-	_IOW(PKVM_ASGARD_IOC_MAGIC, 0x01, __u32)
-#define PKVM_ASGARD_IOC_RECHECK_LEDGER _IO(PKVM_ASGARD_IOC_MAGIC, 0x02)
-#define PKVM_ASGARD_IOC_SYNC_LEDGER PKVM_ASGARD_IOC_RECHECK_LEDGER /* 兼容旧名 */
-#define PKVM_ASGARD_IOC_GET_VIOLATIONS \
-	_IOWR(PKVM_ASGARD_IOC_MAGIC, 0x03, struct pkvm_asgard_violation_query)
-#define PKVM_ASGARD_IOC_CAPTURE_BASELINE _IO(PKVM_ASGARD_IOC_MAGIC, 0x04)
+#define PKVM_ASGARD_IOC_START_TEST 	_IOW(PKVM_ASGARD_IOC_MAGIC, 0x01, struct pkvm_asgard_test_cfg)
+#define PKVM_ASGARD_IOC_SYNC_TEST _IO(PKVM_ASGARD_IOC_MAGIC, 0x02)
+#define PKVM_ASGARD_IOC_GET_VIOLATIONS 	_IOWR(PKVM_ASGARD_IOC_MAGIC, 0x03, struct pkvm_asgard_violation_query)
+
 
 #endif
