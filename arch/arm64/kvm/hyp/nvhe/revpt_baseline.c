@@ -77,6 +77,23 @@ static inline bool revpt_stage2_leaf_is_borrowed_mapping(kvm_pte_t pte)
 	return revpt_stage2_leaf_state(pte) == PKVM_PAGE_SHARED_BORROWED;
 }
 
+static inline enum pkvm_page_state revpt_hyp_leaf_state(kvm_pte_t pte)
+{
+	return pkvm_getstate(kvm_pgtable_hyp_pte_prot(pte));
+}
+
+static inline bool revpt_hyp_leaf_is_owner_mapping(kvm_pte_t pte)
+{
+	enum pkvm_page_state state = revpt_hyp_leaf_state(pte);
+
+	return state == PKVM_PAGE_OWNED || state == PKVM_PAGE_SHARED_OWNED;
+}
+
+static inline bool revpt_hyp_leaf_is_borrowed_mapping(kvm_pte_t pte)
+{
+	return revpt_hyp_leaf_state(pte) == PKVM_PAGE_SHARED_BORROWED;
+}
+
 static int revpt_track_owner_range(u64 pfn, u64 nr_pages, enum page_owner owner,
 				   u64 *cpu_snapshot_pages)
 {
@@ -174,7 +191,38 @@ static int revpt_hyp_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
 			     enum kvm_pgtable_walk_flags flags,
 			     void *arg)
 {
-	return revpt_stage2_walk_cb(start, end, level, ptep, flags, arg);
+	struct revpt_baseline_walk_ctx *ctx = arg;
+	kvm_pte_t pte = READ_ONCE(*ptep);
+	phys_addr_t pa;
+	u64 clip_pfn, clip_pages;
+
+	if (!kvm_pte_valid(pte))
+		return 0;
+
+	pa = (phys_addr_t)(pte & KVM_PTE_ADDR_MASK);
+	if (!revpt_pa_overlap_enabled(pa, end - start, &clip_pfn, &clip_pages))
+		return 0;
+
+	switch (ctx->pass) {
+	case REVPT_CPU_PASS_OWNER:
+		if (!revpt_hyp_leaf_is_owner_mapping(pte))
+			return 0;
+		return revpt_track_owner_range(clip_pfn, clip_pages,
+					      OWN_HYP,
+					      ctx->cpu_snapshot_pages);
+	case REVPT_CPU_PASS_BORROW_ACCESS:
+		if (!revpt_hyp_leaf_is_borrowed_mapping(pte))
+			return 0;
+		return revpt_track_borrow_range(clip_pfn, clip_pages,
+					       ctx->borrow_access,
+					       ctx->cpu_snapshot_pages);
+	case REVPT_CPU_PASS_REF:
+		return revpt_track_ref_range(clip_pfn, clip_pages,
+					     REVPT_REF_HYP_CPU,
+					     ctx->cpu_snapshot_pages);
+	default:
+		return -EINVAL;
+	}
 }
 
 static int revpt_walk_cpu_tables_pass_locked(enum revpt_cpu_pass pass,
