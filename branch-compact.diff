@@ -1,0 +1,1173 @@
+diff --git a/arch/arm64/include/asm/kvm_asm.h b/arch/arm64/include/asm/kvm_asm.h
+index 3a43e29eb..9896e25e1 100644
+--- a/arch/arm64/include/asm/kvm_asm.h
++++ b/arch/arm64/include/asm/kvm_asm.h
+@@ -103,2 +103,2 @@ enum __kvm_host_smccc_func {
+-	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_set_host_dma_domain,
+-	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_sync,
++	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_start_test,
++	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_sync_test,
+@@ -106 +105,0 @@ enum __kvm_host_smccc_func {
+-	__KVM_HOST_SMCCC_FUNC___pkvm_revpt_capture_baseline,
+diff --git a/arch/arm64/include/asm/kvm_host.h b/arch/arm64/include/asm/kvm_host.h
+index ca35d4ae6..9dfba2ced 100644
+--- a/arch/arm64/include/asm/kvm_host.h
++++ b/arch/arm64/include/asm/kvm_host.h
+@@ -410,2 +410,2 @@ int pkvm_view_iopt(unsigned int domain_id, u64 *pool, int cap, phys_addr_t phys_
+-int pkvm_revpt_set_host_dma_domain(unsigned int domain_id);
+-int pkvm_revpt_sync(void);
++int pkvm_revpt_start_test(const struct pkvm_asgard_test_cfg *cfg);
++int pkvm_revpt_sync_test(void);
+@@ -414 +413,0 @@ int pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
+-int pkvm_revpt_capture_baseline(void);
+diff --git a/arch/arm64/kvm/hyp/include/nvhe/iommu.h b/arch/arm64/kvm/hyp/include/nvhe/iommu.h
+index 9fd6b7639..c64a1075f 100644
+--- a/arch/arm64/kvm/hyp/include/nvhe/iommu.h
++++ b/arch/arm64/kvm/hyp/include/nvhe/iommu.h
+@@ -157,2 +157,2 @@ extern const struct pkvm_iommu_ops pkvm_sysmmu_sync_ops;
+-int __pkvm_revpt_set_host_dma_domain(unsigned int domain_id);
+-int __pkvm_revpt_sync(void);
++int __pkvm_revpt_start_test(const struct pkvm_asgard_test_cfg *cfg);
++int __pkvm_revpt_sync_test(void);
+@@ -161 +160,0 @@ int __pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
+-int __pkvm_revpt_capture_baseline(void);
+diff --git a/arch/arm64/kvm/hyp/include/nvhe/pfn_info.h b/arch/arm64/kvm/hyp/include/nvhe/pfn_info.h
+index 695fc7bcb..856ae3cdc 100644
+--- a/arch/arm64/kvm/hyp/include/nvhe/pfn_info.h
++++ b/arch/arm64/kvm/hyp/include/nvhe/pfn_info.h
+@@ -93 +93 @@ enum revpt_violation_reason {
+-#define MAX_VIOLATE_NUM     1024
++#define MAX_VIOLATE_NUM     256
+@@ -131,0 +132,4 @@ void revpt_reset_all(void);
++/* 仅重置一段 PFN 的动态账本字段。 */
++void revpt_reset_range(u64 start_pfn, u64 nr_pages);
++/* 清空违规记录计数（不清空缓冲内容）。 */
++void revpt_clear_violations(void);
+@@ -192,2 +195,0 @@ int revpt_copy_violations(struct pkvm_asgard_violation *out, u32 cap, u32 *copie
+-/* 触发一次全量检查。 */
+-void revpt_force_rescan(void);
+diff --git a/arch/arm64/kvm/hyp/include/nvhe/revpt_baseline.h b/arch/arm64/kvm/hyp/include/nvhe/revpt_baseline.h
+index fea97a4ce..6555705ca 100644
+--- a/arch/arm64/kvm/hyp/include/nvhe/revpt_baseline.h
++++ b/arch/arm64/kvm/hyp/include/nvhe/revpt_baseline.h
+@@ -4,0 +5,16 @@
++#include <linux/types.h>
++#include <asm/page.h>
++
++struct revpt_test_cfg {
++	bool configured;
++	bool snapshot_valid;
++	u64 hpa_start;
++	u64 hpa_size;
++	u32 host_dma_domain;
++};
++
++extern struct revpt_test_cfg revpt_test_cfg;
++
++bool revpt_pa_overlap_enabled(phys_addr_t pa, u64 size,
++			      u64 *clip_pfn, u64 *clip_pages);
++
+@@ -10 +26 @@
+-int revpt_capture_cpu_baseline_locked(void);
++int revpt_capture_cpu_baseline_locked(u64 *cpu_snapshot_pages);
+diff --git a/arch/arm64/kvm/hyp/nvhe/hyp-main.c b/arch/arm64/kvm/hyp/nvhe/hyp-main.c
+index 6e39d775a..a9954a35f 100644
+--- a/arch/arm64/kvm/hyp/nvhe/hyp-main.c
++++ b/arch/arm64/kvm/hyp/nvhe/hyp-main.c
+@@ -1470 +1470,2 @@ static void handle___pkvm_view_iopt(struct kvm_cpu_context *host_ctxt)
+-static void handle___pkvm_revpt_set_host_dma_domain(struct kvm_cpu_context *host_ctxt)
++
++static void handle___pkvm_revpt_start_test(struct kvm_cpu_context *host_ctxt)
+@@ -1472 +1473,9 @@ static void handle___pkvm_revpt_set_host_dma_domain(struct kvm_cpu_context *host
+-	DECLARE_REG(unsigned int, domain_id, host_ctxt, 1);
++	DECLARE_REG(struct pkvm_asgard_test_cfg *, cfg_hva, host_ctxt, 1);
++	struct pkvm_asgard_test_cfg *cfg = kern_hyp_va(cfg_hva);
++	int ret;
++
++	ret = hyp_pin_shared_mem((u8 *)cfg, (u8 *)cfg + sizeof(*cfg));
++	if (!ret) {
++		ret = __pkvm_revpt_start_test(cfg);
++		hyp_unpin_shared_mem((u8 *)cfg, (u8 *)cfg + sizeof(*cfg));
++	}
+@@ -1474 +1483 @@ static void handle___pkvm_revpt_set_host_dma_domain(struct kvm_cpu_context *host
+-	cpu_reg(host_ctxt, 1) = __pkvm_revpt_set_host_dma_domain(domain_id);
++	cpu_reg(host_ctxt, 1) = ret;
+@@ -1477 +1486 @@ static void handle___pkvm_revpt_set_host_dma_domain(struct kvm_cpu_context *host
+-static void handle___pkvm_revpt_sync(struct kvm_cpu_context *host_ctxt)
++static void handle___pkvm_revpt_sync_test(struct kvm_cpu_context *host_ctxt)
+@@ -1479 +1488 @@ static void handle___pkvm_revpt_sync(struct kvm_cpu_context *host_ctxt)
+-	cpu_reg(host_ctxt, 1) = __pkvm_revpt_sync();
++	cpu_reg(host_ctxt, 1) = __pkvm_revpt_sync_test();
+@@ -1519,5 +1527,0 @@ static void handle___pkvm_revpt_get_violations(struct kvm_cpu_context *host_ctxt
+-static void handle___pkvm_revpt_capture_baseline(struct kvm_cpu_context *host_ctxt)
+-{
+-	cpu_reg(host_ctxt, 1) = __pkvm_revpt_capture_baseline();
+-}
+-
+@@ -1578,2 +1582,2 @@ static const hcall_t host_hcall[] = {
+-	HANDLE_FUNC(__pkvm_revpt_set_host_dma_domain),
+-	HANDLE_FUNC(__pkvm_revpt_sync),
++	HANDLE_FUNC(__pkvm_revpt_start_test),
++	HANDLE_FUNC(__pkvm_revpt_sync_test),
+@@ -1581 +1584,0 @@ static const hcall_t host_hcall[] = {
+-	HANDLE_FUNC(__pkvm_revpt_capture_baseline),
+diff --git a/arch/arm64/kvm/hyp/nvhe/iommu.c b/arch/arm64/kvm/hyp/nvhe/iommu.c
+index 1bc45445d..4f8dab6cb 100644
+--- a/arch/arm64/kvm/hyp/nvhe/iommu.c
++++ b/arch/arm64/kvm/hyp/nvhe/iommu.c
+@@ -45,3 +44,0 @@ static size_t iommu_mem_remaining;
+-/* 由 userspace 显式指定：哪个 domain_id 代表 host DMA。 */
+-static unsigned int revpt_host_dma_domain = UINT_MAX;
+-
+@@ -555,3 +551,0 @@ int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
+-	enum revpt_ref_type type;
+-	u64 pfn = paddr >> PAGE_SHIFT;
+-	u64 pages = PAGE_ALIGN(size) >> PAGE_SHIFT;
+@@ -570,13 +563,0 @@ int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
+-	/*
+-	 * 这里把 IOMMU 映射变更同步到测试账本：
+-	 * - 先用外部工具设置 host DMA domain_id
+-	 * - 该 domain 记为 HOST_DMA，其余按 ENCLAVE_DMA 记账
+-	 */
+-	type = (domain_id == revpt_host_dma_domain) ? REVPT_REF_HOST_DMA :
+-						      REVPT_REF_ENCLAVE_DMA;
+-	if (pages) {
+-		(void)revpt_ref_inc_range(pfn, pages, type);
+-		/* 立即触发区间检查，避免把违规延后到离线阶段才暴露。 */
+-		(void)revpt_check_range(pfn, pages);
+-	}
+-
+@@ -586 +566,0 @@ int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
+-// pt-checked
+@@ -591,3 +570,0 @@ size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
+-	enum revpt_ref_type type;
+-	phys_addr_t paddr;
+-	u64 pages = PAGE_ALIGN(size) >> PAGE_SHIFT;
+@@ -598,6 +574,0 @@ size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
+-	/*
+-	 * 先快照旧映射，再执行 unmap：
+-	 * 这样可以正确把旧 PFN 的 DMA 引用计数减回去。
+-	 */
+-	paddr = __pkvm_iommu_iova_to_phys(domain_id, iova);
+-
+@@ -611,7 +581,0 @@ size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
+-	type = (domain_id == revpt_host_dma_domain) ? REVPT_REF_HOST_DMA :
+-						      REVPT_REF_ENCLAVE_DMA;
+-	if (pages && paddr) {
+-		(void)revpt_ref_dec_range(paddr >> PAGE_SHIFT, pages, type);
+-		(void)revpt_check_range(paddr >> PAGE_SHIFT, pages);
+-	}
+-
+@@ -864 +828,6 @@ struct revpt_iommu_walk_ctx {
+-	enum revpt_ref_type type;
++	u64 *host_dma_snapshot_ptes;
++};
++
++struct revpt_iopt_lock_state {
++	struct pkvm_iommu *devs[PKVM_IOMMU_NR_DRIVERS];
++	u32 nr_locked;
+@@ -866,0 +836,2 @@ struct revpt_iommu_walk_ctx {
++static struct revpt_iopt_lock_state revpt_iopt_lock_state;
++
+@@ -871 +842,13 @@ static int revpt_iommu_walk_cb(unsigned int domain_id, u64 iova,
+-	u64 pfn = pa >> PAGE_SHIFT;
++	u64 clip_pfn, clip_pages;
++	u64 i;
++
++	if (!revpt_pa_overlap_enabled(pa, PAGE_SIZE, &clip_pfn, &clip_pages))
++		return 0;
++
++	for (i = 0; i < clip_pages; i++) {
++		u64 pfn = clip_pfn + i;
++
++		(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
++		(void)revpt_ref_inc(pfn, REVPT_REF_HOST_DMA);
++		(*ctx->host_dma_snapshot_ptes)++;
++	}
+@@ -873,6 +855,0 @@ static int revpt_iommu_walk_cb(unsigned int domain_id, u64 iova,
+-	(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
+-	if (ctx->type == REVPT_REF_HOST_DMA)
+-		(void)revpt_grant_access(pfn, ACC_HOST_DMA);
+-	else
+-		(void)revpt_grant_access(pfn, ACC_ENCLAVE_DMA);
+-	(void)revpt_ref_inc(pfn, ctx->type);
+@@ -881,0 +859,12 @@ static int revpt_iommu_walk_cb(unsigned int domain_id, u64 iova,
++static bool revpt_iopt_lock_fn_seen(int (*lock_fn)(struct pkvm_iommu *))
++{
++	u32 i;
++
++	for (i = 0; i < revpt_iopt_lock_state.nr_locked; i++) {
++		if (revpt_iopt_lock_state.devs[i]->ops->lock_all_domain_pts == lock_fn)
++			return true;
++	}
++
++	return false;
++}
++
+@@ -884,0 +874 @@ static int revpt_lock_all_iopt_locked(void)
++	int ret = 0;
+@@ -885,0 +876 @@ static int revpt_lock_all_iopt_locked(void)
++	revpt_iopt_lock_state.nr_locked = 0;
+@@ -887,5 +878,14 @@ static int revpt_lock_all_iopt_locked(void)
+-		if (dev->ops->lock_all_domain_pts) {
+-			int ret = dev->ops->lock_all_domain_pts(dev);
+-			if (ret)
+-				return ret;
+-		}
++		int (*lock_fn)(struct pkvm_iommu *);
++
++		lock_fn = dev->ops->lock_all_domain_pts;
++		if (!lock_fn)
++			continue;
++		/* Current Rockchip backend uses a global domain namespace; dedupe by lock fn is valid on this target. */
++		if (revpt_iopt_lock_fn_seen(lock_fn))
++			continue;
++
++		ret = lock_fn(dev);
++		if (ret)
++			goto unwind;
++
++		revpt_iopt_lock_state.devs[revpt_iopt_lock_state.nr_locked++] = dev;
+@@ -892,0 +893 @@ static int revpt_lock_all_iopt_locked(void)
++
+@@ -893,0 +895,12 @@ static int revpt_lock_all_iopt_locked(void)
++
++unwind:
++	while (revpt_iopt_lock_state.nr_locked > 0) {
++		struct pkvm_iommu *locked_dev;
++
++		revpt_iopt_lock_state.nr_locked--;
++		locked_dev = revpt_iopt_lock_state.devs[revpt_iopt_lock_state.nr_locked];
++		if (locked_dev->ops->unlock_all_domain_pts)
++			locked_dev->ops->unlock_all_domain_pts(locked_dev);
++	}
++
++	return ret;
+@@ -898 +911,2 @@ static void revpt_unlock_all_iopt_locked(void)
+-	struct pkvm_iommu *dev;
++	while (revpt_iopt_lock_state.nr_locked > 0) {
++		struct pkvm_iommu *dev;
+@@ -900 +914,2 @@ static void revpt_unlock_all_iopt_locked(void)
+-	list_for_each_entry_reverse (dev, &iommu_list, list) {
++		revpt_iopt_lock_state.nr_locked--;
++		dev = revpt_iopt_lock_state.devs[revpt_iopt_lock_state.nr_locked];
+@@ -906 +921 @@ static void revpt_unlock_all_iopt_locked(void)
+-static int revpt_scan_iommu_locked(void)
++static int revpt_scan_iommu_locked(u64 *host_dma_snapshot_ptes)
+@@ -908,4 +922,0 @@ static int revpt_scan_iommu_locked(void)
+-	/*
+-	 * I/O 页表基线扫描：
+-	 * 由驱动 walker 回调逐条导出映射，不再使用旧 get_iopt 缓冲接口。
+-	 */
+@@ -912,0 +924 @@ static int revpt_scan_iommu_locked(void)
++	int (*matched_walk_fn)(unsigned int, pkvm_iopt_walk_cb_t, void *) = NULL;
+@@ -915,2 +927,5 @@ static int revpt_scan_iommu_locked(void)
+-		unsigned int domain_ids[512];
+-		int nr_domains, i;
++		struct revpt_iommu_walk_ctx ctx = {
++			.host_dma_snapshot_ptes = host_dma_snapshot_ptes,
++		};
++		int (*walk_fn)(unsigned int, pkvm_iopt_walk_cb_t, void *);
++		int ret;
+@@ -918 +933,5 @@ static int revpt_scan_iommu_locked(void)
+-		if (!dev->ops->get_all_domain_ids || !dev->ops->walk_iopt)
++		walk_fn = dev->ops->walk_iopt;
++		if (!walk_fn)
++			continue;
++		/* Current Rockchip backend walks a global domain namespace; dedupe by walk fn is valid on this target. */
++		if (matched_walk_fn == walk_fn)
+@@ -921,7 +940,8 @@ static int revpt_scan_iommu_locked(void)
+-		nr_domains = dev->ops->get_all_domain_ids(domain_ids);
+-		for (i = 0; i < nr_domains; i++) {
+-			struct revpt_iommu_walk_ctx ctx = {
+-				.type = (domain_ids[i] == revpt_host_dma_domain) ?
+-					REVPT_REF_HOST_DMA : REVPT_REF_ENCLAVE_DMA,
+-			};
+-			int ret;
++		ret = walk_fn(revpt_test_cfg.host_dma_domain,
++			      revpt_iommu_walk_cb, &ctx);
++		if (ret == -ENOENT)
++			continue;
++		if (ret < 0)
++			return ret;
++		if (matched_walk_fn)
++			return -EEXIST;
+@@ -929,5 +949 @@ static int revpt_scan_iommu_locked(void)
+-			ret = dev->ops->walk_iopt(domain_ids[i], revpt_iommu_walk_cb,
+-						  &ctx);
+-			if (ret)
+-				return ret;
+-		}
++		matched_walk_fn = walk_fn;
+@@ -936,2 +952,2 @@ static int revpt_scan_iommu_locked(void)
+-	return 0;
+-}
++	if (!matched_walk_fn)
++		return -ENOENT;
+@@ -939,5 +954,0 @@ static int revpt_scan_iommu_locked(void)
+-int __pkvm_revpt_set_host_dma_domain(unsigned int domain_id)
+-{
+-	host_lock_component();
+-	revpt_host_dma_domain = domain_id;
+-	host_unlock_component();
+@@ -947 +958,3 @@ int __pkvm_revpt_set_host_dma_domain(unsigned int domain_id)
+-int __pkvm_revpt_sync(void)
++static int revpt_rebuild_snapshot_locked(u64 *cpu_snapshot_pages,
++					 u64 *host_dma_snapshot_ptes,
++					 u32 *violation_total)
+@@ -949,2 +962,18 @@ int __pkvm_revpt_sync(void)
+-	/* 主动全量复扫：用于板端测试命令触发“重新爬取元数据”。 */
+-	revpt_force_rescan();
++	u64 start_pfn = revpt_test_cfg.hpa_start >> PAGE_SHIFT;
++	u64 nr_pages = revpt_test_cfg.hpa_size >> PAGE_SHIFT;
++	int ret;
++
++	revpt_reset_range(start_pfn, nr_pages);
++	revpt_clear_violations();
++	*cpu_snapshot_pages = 0;
++	*host_dma_snapshot_ptes = 0;
++
++	ret = revpt_capture_cpu_baseline_locked(cpu_snapshot_pages);
++	if (ret)
++		return ret;
++
++	ret = revpt_scan_iommu_locked(host_dma_snapshot_ptes);
++	if (ret)
++		return ret;
++
++	*violation_total = revpt_check_range(start_pfn, nr_pages);
+@@ -954,2 +983 @@ int __pkvm_revpt_sync(void)
+-int __pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
+-				 u32 *copied, u32 *total)
++int __pkvm_revpt_start_test(const struct pkvm_asgard_test_cfg *cfg)
+@@ -957 +985,46 @@ int __pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
+-	return revpt_copy_violations(out, cap, copied, total);
++	u64 cpu_snapshot_pages, host_dma_snapshot_ptes;
++	u32 violations;
++	u64 old_start_pfn = 0, old_nr_pages = 0;
++	bool had_old_cfg;
++	int ret;
++
++	if (!cfg || cfg->reserved)
++		return -EINVAL;
++	if (!PAGE_ALIGNED(cfg->hpa_start) || !PAGE_ALIGNED(cfg->hpa_size) ||
++	    !cfg->hpa_size)
++		return -EINVAL;
++	if ((cfg->hpa_start >> PAGE_SHIFT) >= REV_PT_NR_PAGES ||
++	    (cfg->hpa_size >> PAGE_SHIFT) > REV_PT_NR_PAGES -
++		(cfg->hpa_start >> PAGE_SHIFT))
++		return -EINVAL;
++
++	host_lock_component();
++	had_old_cfg = revpt_test_cfg.configured;
++	if (had_old_cfg) {
++		old_start_pfn = revpt_test_cfg.hpa_start >> PAGE_SHIFT;
++		old_nr_pages = revpt_test_cfg.hpa_size >> PAGE_SHIFT;
++	}
++
++	revpt_test_cfg.configured = true;
++	revpt_test_cfg.snapshot_valid = false;
++	revpt_test_cfg.hpa_start = cfg->hpa_start;
++	revpt_test_cfg.hpa_size = cfg->hpa_size;
++	revpt_test_cfg.host_dma_domain = cfg->host_dma_domain;
++
++	if (had_old_cfg &&
++	    (old_start_pfn != (cfg->hpa_start >> PAGE_SHIFT) ||
++	     old_nr_pages != (cfg->hpa_size >> PAGE_SHIFT)))
++		revpt_reset_range(old_start_pfn, old_nr_pages);
++
++	ret = revpt_lock_all_iopt_locked();
++	if (!ret) {
++		ret = revpt_rebuild_snapshot_locked(&cpu_snapshot_pages,
++					   &host_dma_snapshot_ptes,
++					   &violations);
++		revpt_unlock_all_iopt_locked();
++	}
++	if (!ret)
++		revpt_test_cfg.snapshot_valid = true;
++
++	host_unlock_component();
++	return ret;
+@@ -960 +1033 @@ int __pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
+-int __pkvm_revpt_capture_baseline(void)
++int __pkvm_revpt_sync_test(void)
+@@ -961,0 +1035,2 @@ int __pkvm_revpt_capture_baseline(void)
++	u64 cpu_snapshot_pages, host_dma_snapshot_ptes;
++	u32 violations;
+@@ -964,0 +1040,6 @@ int __pkvm_revpt_capture_baseline(void)
++	if (!revpt_test_cfg.configured) {
++		host_unlock_component();
++		return -EINVAL;
++	}
++	revpt_test_cfg.snapshot_valid = false;
++
+@@ -967,4 +1048,3 @@ int __pkvm_revpt_capture_baseline(void)
+-		/* 先锁住 CPU+IO 页表，再统一遍历，减少时序窗口。 */
+-		ret = revpt_capture_cpu_baseline_locked();
+-		if (!ret)
+-			ret = revpt_scan_iommu_locked();
++		ret = revpt_rebuild_snapshot_locked(&cpu_snapshot_pages,
++					   &host_dma_snapshot_ptes,
++					   &violations);
+@@ -972,0 +1053,18 @@ int __pkvm_revpt_capture_baseline(void)
++	if (!ret)
++		revpt_test_cfg.snapshot_valid = true;
++	host_unlock_component();
++
++	return ret;
++}
++
++int __pkvm_revpt_get_violations(struct pkvm_asgard_violation *out, u32 cap,
++				 u32 *copied, u32 *total)
++{
++	int ret;
++
++	host_lock_component();
++	if (!revpt_test_cfg.snapshot_valid) {
++		host_unlock_component();
++		return -EAGAIN;
++	}
++	ret = revpt_copy_violations(out, cap, copied, total);
+diff --git a/arch/arm64/kvm/hyp/nvhe/iommu/rockchip-iommu.c b/arch/arm64/kvm/hyp/nvhe/iommu/rockchip-iommu.c
+index 242b3fdd0..3b7b5306b 100644
+--- a/arch/arm64/kvm/hyp/nvhe/iommu/rockchip-iommu.c
++++ b/arch/arm64/kvm/hyp/nvhe/iommu/rockchip-iommu.c
+@@ -1026 +1026 @@ static int rk_iommu_walk_iopt(unsigned int domain_id, pkvm_iopt_walk_cb_t cb,
+-		return -ENODEV;
++		return -ENOENT;
+diff --git a/arch/arm64/kvm/hyp/nvhe/mem_protect.c b/arch/arm64/kvm/hyp/nvhe/mem_protect.c
+index c3c686c9c..c4ee3299d 100644
+--- a/arch/arm64/kvm/hyp/nvhe/mem_protect.c
++++ b/arch/arm64/kvm/hyp/nvhe/mem_protect.c
+@@ -571,15 +570,0 @@ int host_stage2_set_owner_locked(phys_addr_t addr, u64 size,
+-	/*
+-	 * owner 发生变化时，立刻同步到 rev_pt 测试账本。
+-	 * 注意：本函数在 host_kvm.lock 下执行，revpt 内部使用分片锁，
+-	 * 不回调 stage2/iommu，避免锁顺序反转。
+-	 */
+-	if (owner_id == pkvm_host_id)
+-		(void)revpt_set_owner_range(addr >> PAGE_SHIFT, size >> PAGE_SHIFT,
+-					   OWN_HOST);
+-	else if (owner_id == pkvm_hyp_id)
+-		(void)revpt_set_owner_range(addr >> PAGE_SHIFT, size >> PAGE_SHIFT,
+-					   OWN_HYP);
+-	else
+-		(void)revpt_set_owner_range(addr >> PAGE_SHIFT, size >> PAGE_SHIFT,
+-					   OWN_ENCLAVE);
+-	(void)revpt_check_range(addr >> PAGE_SHIFT, size >> PAGE_SHIFT);
+diff --git a/arch/arm64/kvm/hyp/nvhe/pfn_info.c b/arch/arm64/kvm/hyp/nvhe/pfn_info.c
+index 5113d07c3..403afbf3e 100644
+--- a/arch/arm64/kvm/hyp/nvhe/pfn_info.c
++++ b/arch/arm64/kvm/hyp/nvhe/pfn_info.c
+@@ -82,0 +83,43 @@ void revpt_reset_all(void)
++
++void revpt_clear_violations(void)
++{
++	unsigned long irqflags;
++
++	revpt_ensure_init();
++	raw_spin_lock_irqsave(&revpt_violate_lock, irqflags);
++	violate_num = 0;
++	raw_spin_unlock_irqrestore(&revpt_violate_lock, irqflags);
++}
++
++void revpt_reset_range(u64 start_pfn, u64 nr_pages)
++{
++	u64 i;
++
++	revpt_ensure_init();
++	if (!nr_pages)
++		return;
++	if (!revpt_pfn_valid(start_pfn) || nr_pages > REV_PT_NR_PAGES - start_pfn)
++		return;
++
++	for (i = 0; i < nr_pages; i++) {
++		u64 pfn = start_pfn + i;
++		unsigned long irqflags;
++		struct pfn_info *info = &rev_pt[pfn];
++		u16 static_flags;
++
++		raw_spin_lock_irqsave(revpt_lock_for_pfn(pfn), irqflags);
++		static_flags = info->flags &
++			(PFN_F_RAM | PFN_F_MMIO | PFN_F_SENSITIVE |
++			 PFN_F_MMU_PT | PFN_F_IOMMU_PT);
++		info->owner = OWN_FREE;
++		info->allowed_mask = 0;
++		info->flags = static_flags;
++		info->host_refs = 0;
++		info->host_dev_refs = 0;
++		info->enclave_refs = 0;
++		info->enclave_dev_refs = 0;
++		info->hyp_refs = 0;
++		info->generation++;
++		raw_spin_unlock_irqrestore(revpt_lock_for_pfn(pfn), irqflags);
++	}
++}
+@@ -252 +294,0 @@ u32 revpt_check_pfn(u64 pfn)
+-	struct pfn_info snapshot;
+@@ -320 +361,0 @@ static int __revpt_update_owner(u64 pfn, enum page_owner owner)
+-	(void)revpt_check_pfn(pfn);
+@@ -366 +406,0 @@ void make_exclusively_owned(u64 pfn)
+-	(void)revpt_check_pfn(pfn);
+@@ -385 +424,0 @@ void make_shared(u64 pfn)
+-	(void)revpt_check_pfn(pfn);
+@@ -406 +444,0 @@ int revpt_grant_access(u64 pfn, u8 access_mask)
+-	(void)revpt_check_pfn(pfn);
+@@ -430 +467,0 @@ int revpt_revoke_access(u64 pfn, u8 access_mask)
+-	(void)revpt_check_pfn(pfn);
+@@ -481 +517,0 @@ int revpt_set_flags(u64 pfn, u16 set_mask, u16 clear_mask)
+-	(void)revpt_check_pfn(pfn);
+@@ -522 +557,0 @@ static int __revpt_change_ref(u64 pfn, enum revpt_ref_type type, bool inc)
+-	struct pfn_info snapshot;
+@@ -557 +591,0 @@ static int __revpt_change_ref(u64 pfn, enum revpt_ref_type type, bool inc)
+-	snapshot = *info;
+@@ -560,4 +593,0 @@ static int __revpt_change_ref(u64 pfn, enum revpt_ref_type type, bool inc)
+-	if (reason)
+-		revpt_record_violation(pfn, &snapshot, reason);
+-
+-	(void)revpt_check_pfn(pfn);
+@@ -747,13 +776,0 @@ int revpt_copy_violations(struct pkvm_asgard_violation *out, u32 cap, u32 *copie
+-
+-/* 全量复扫：用于测试命令触发一次“立即一致性检查”。 */
+-void revpt_force_rescan(void)
+-{
+-	u64 i;
+-
+-	revpt_ensure_init();
+-	for (i = 0; i < REV_PT_NR_PAGES; i++) {
+-		if (!(READ_ONCE(rev_pt[i].flags) & PFN_F_TRACKED))
+-			continue;
+-		(void)revpt_check_pfn(i);
+-	}
+-}
+diff --git a/arch/arm64/kvm/hyp/nvhe/revpt_baseline.c b/arch/arm64/kvm/hyp/nvhe/revpt_baseline.c
+index 070633195..c4436b12d 100644
+--- a/arch/arm64/kvm/hyp/nvhe/revpt_baseline.c
++++ b/arch/arm64/kvm/hyp/nvhe/revpt_baseline.c
+@@ -2,0 +3 @@
++#include <linux/kernel.h>
+@@ -10,0 +12,8 @@
++struct revpt_test_cfg revpt_test_cfg;
++
++enum revpt_cpu_pass {
++	REVPT_CPU_PASS_OWNER = 0,
++	REVPT_CPU_PASS_BORROW_ACCESS,
++	REVPT_CPU_PASS_REF,
++};
++
+@@ -13,0 +23,3 @@ struct revpt_baseline_walk_ctx {
++	u8 borrow_access;
++	enum revpt_cpu_pass pass;
++	u64 *cpu_snapshot_pages;
+@@ -21,3 +33,66 @@ static inline phys_addr_t revpt_stage2_pte_phys(kvm_pte_t pte)
+-static int revpt_track_mapping_range(u64 pfn, u64 nr_pages,
+-				      enum page_owner owner,
+-				      enum revpt_ref_type ref_type)
++bool revpt_pa_overlap_enabled(phys_addr_t pa, u64 size,
++			      u64 *clip_pfn, u64 *clip_pages)
++{
++	u64 range_start, range_end, ent_start, ent_end;
++
++	if (!size || !revpt_test_cfg.hpa_size)
++		return false;
++
++	range_start = revpt_test_cfg.hpa_start;
++	range_end = range_start + revpt_test_cfg.hpa_size;
++	ent_start = pa;
++	ent_end = ent_start + size;
++
++	if (ent_end <= range_start || ent_start >= range_end)
++		return false;
++
++	ent_start = max(ent_start, range_start);
++	ent_end = min(ent_end, range_end);
++	if (ent_end <= ent_start)
++		return false;
++
++	*clip_pfn = ent_start >> PAGE_SHIFT;
++	*clip_pages = (ent_end - ent_start) >> PAGE_SHIFT;
++	return *clip_pages != 0;
++}
++
++static inline enum pkvm_page_state revpt_stage2_leaf_state(kvm_pte_t pte)
++{
++	/*
++	 * Reuse pKVM stage-2 SW bits semantics from mem_protect:
++	 * PKVM_PAGE_{OWNED,SHARED_OWNED,SHARED_BORROWED}.
++	 */
++	return pkvm_getstate(kvm_pgtable_stage2_pte_prot(pte));
++}
++
++static inline bool revpt_stage2_leaf_is_owner_mapping(kvm_pte_t pte)
++{
++	enum pkvm_page_state state = revpt_stage2_leaf_state(pte);
++
++	return state == PKVM_PAGE_OWNED || state == PKVM_PAGE_SHARED_OWNED;
++}
++
++static inline bool revpt_stage2_leaf_is_borrowed_mapping(kvm_pte_t pte)
++{
++	return revpt_stage2_leaf_state(pte) == PKVM_PAGE_SHARED_BORROWED;
++}
++
++static inline enum pkvm_page_state revpt_hyp_leaf_state(kvm_pte_t pte)
++{
++	return pkvm_getstate(kvm_pgtable_hyp_pte_prot(pte));
++}
++
++static inline bool revpt_hyp_leaf_is_owner_mapping(kvm_pte_t pte)
++{
++	enum pkvm_page_state state = revpt_hyp_leaf_state(pte);
++
++	return state == PKVM_PAGE_OWNED || state == PKVM_PAGE_SHARED_OWNED;
++}
++
++static inline bool revpt_hyp_leaf_is_borrowed_mapping(kvm_pte_t pte)
++{
++	return revpt_hyp_leaf_state(pte) == PKVM_PAGE_SHARED_BORROWED;
++}
++
++static int revpt_track_owner_range(u64 pfn, u64 nr_pages, enum page_owner owner,
++				   u64 *cpu_snapshot_pages)
+@@ -31,7 +106,7 @@ static int revpt_track_mapping_range(u64 pfn, u64 nr_pages,
+-		if (revpt_snapshot_pfn(cur, &info)) {
+-			/* 首次出现的 PFN：建立追踪并设置默认 owner。 */
+-			(void)revpt_set_flags(cur, PFN_F_TRACKED | PFN_F_RAM, 0);
+-			(void)revpt_set_owner(cur, owner);
+-		} else if (!(info.flags & PFN_F_TRACKED)) {
+-			(void)revpt_set_flags(cur, PFN_F_TRACKED | PFN_F_RAM, 0);
+-			(void)revpt_set_owner(cur, owner);
++		(void)revpt_set_flags(cur, PFN_F_TRACKED | PFN_F_RAM, 0);
++		if (revpt_snapshot_pfn(cur, &info))
++			return -EINVAL;
++
++		if (!(info.flags & PFN_F_TRACKED) || info.owner == OWN_FREE) {
++			if (revpt_set_owner(cur, owner))
++				return -EINVAL;
+@@ -39,7 +114 @@ static int revpt_track_mapping_range(u64 pfn, u64 nr_pages,
+-			/* 多主体同时可达：保持当前 owner，仅补齐授权。 */
+-			if (owner == OWN_HOST)
+-				(void)revpt_grant_access(cur, ACC_HOST_CPU);
+-			else if (owner == OWN_ENCLAVE)
+-				(void)revpt_grant_access(cur, ACC_ENCLAVE_CPU);
+-			else if (owner == OWN_HYP)
+-				(void)revpt_grant_access(cur, ACC_HYP_CPU);
++			return -EINVAL;
+@@ -46,0 +116,33 @@ static int revpt_track_mapping_range(u64 pfn, u64 nr_pages,
++
++		(*cpu_snapshot_pages)++;
++	}
++
++	return 0;
++}
++
++static int revpt_track_borrow_range(u64 pfn, u64 nr_pages, u8 borrow_access,
++				    u64 *cpu_snapshot_pages)
++{
++	u64 i;
++
++	for (i = 0; i < nr_pages; i++) {
++		u64 cur = pfn + i;
++
++		(void)revpt_set_flags(cur, PFN_F_TRACKED | PFN_F_RAM, 0);
++		(void)revpt_grant_access(cur, borrow_access);
++		(*cpu_snapshot_pages)++;
++	}
++
++	return 0;
++}
++
++static int revpt_track_ref_range(u64 pfn, u64 nr_pages, enum revpt_ref_type ref_type,
++				 u64 *cpu_snapshot_pages)
++{
++	u64 i;
++
++	for (i = 0; i < nr_pages; i++) {
++		u64 cur = pfn + i;
++
++		(void)revpt_ref_inc(cur, ref_type);
++		(*cpu_snapshot_pages)++;
+@@ -49 +150,0 @@ static int revpt_track_mapping_range(u64 pfn, u64 nr_pages,
+-	(void)revpt_ref_inc_range(pfn, nr_pages, ref_type);
+@@ -60 +161 @@ static int revpt_stage2_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
+-	u64 pages;
++	u64 clip_pfn, clip_pages;
+@@ -66,2 +167 @@ static int revpt_stage2_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
+-	pages = (end - start) >> PAGE_SHIFT;
+-	if (!pages)
++	if (!revpt_pa_overlap_enabled(pa, end - start, &clip_pfn, &clip_pages))
+@@ -70,2 +170,18 @@ static int revpt_stage2_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
+-	return revpt_track_mapping_range(pa >> PAGE_SHIFT, pages, ctx->owner,
+-					 ctx->ref_type);
++	switch (ctx->pass) {
++	case REVPT_CPU_PASS_OWNER:
++		if (!revpt_stage2_leaf_is_owner_mapping(pte))
++			return 0;
++		return revpt_track_owner_range(clip_pfn, clip_pages, ctx->owner,
++					      ctx->cpu_snapshot_pages);
++	case REVPT_CPU_PASS_BORROW_ACCESS:
++		if (!revpt_stage2_leaf_is_borrowed_mapping(pte))
++			return 0;
++		return revpt_track_borrow_range(clip_pfn, clip_pages,
++					       ctx->borrow_access,
++					       ctx->cpu_snapshot_pages);
++	case REVPT_CPU_PASS_REF:
++		return revpt_track_ref_range(clip_pfn, clip_pages, ctx->ref_type,
++					     ctx->cpu_snapshot_pages);
++	default:
++		return -EINVAL;
++	}
+@@ -77,0 +194 @@ static int revpt_hyp_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
++	struct revpt_baseline_walk_ctx *ctx = arg;
+@@ -80 +197 @@ static int revpt_hyp_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
+-	u64 pages;
++	u64 clip_pfn, clip_pages;
+@@ -86,2 +203 @@ static int revpt_hyp_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
+-	pages = (end - start) >> PAGE_SHIFT;
+-	if (!pages)
++	if (!revpt_pa_overlap_enabled(pa, end - start, &clip_pfn, &clip_pages))
+@@ -90,2 +206,20 @@ static int revpt_hyp_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
+-	return revpt_track_mapping_range(pa >> PAGE_SHIFT, pages,
+-					 OWN_HYP, REVPT_REF_HYP_CPU);
++	switch (ctx->pass) {
++	case REVPT_CPU_PASS_OWNER:
++		if (!revpt_hyp_leaf_is_owner_mapping(pte))
++			return 0;
++		return revpt_track_owner_range(clip_pfn, clip_pages,
++					      OWN_HYP,
++					      ctx->cpu_snapshot_pages);
++	case REVPT_CPU_PASS_BORROW_ACCESS:
++		if (!revpt_hyp_leaf_is_borrowed_mapping(pte))
++			return 0;
++		return revpt_track_borrow_range(clip_pfn, clip_pages,
++					       ctx->borrow_access,
++					       ctx->cpu_snapshot_pages);
++	case REVPT_CPU_PASS_REF:
++		return revpt_track_ref_range(clip_pfn, clip_pages,
++					     REVPT_REF_HYP_CPU,
++					     ctx->cpu_snapshot_pages);
++	default:
++		return -EINVAL;
++	}
+@@ -94 +228,4 @@ static int revpt_hyp_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
+-int revpt_capture_cpu_baseline_locked(void)
++static int revpt_walk_cpu_tables_pass_locked(enum revpt_cpu_pass pass,
++					      struct kvm_shadow_vm **locked_vms,
++					      int nr_locked,
++					      u64 *cpu_snapshot_pages)
+@@ -98,0 +236,3 @@ int revpt_capture_cpu_baseline_locked(void)
++		.borrow_access = ACC_HOST_CPU,
++		.pass = pass,
++		.cpu_snapshot_pages = cpu_snapshot_pages,
+@@ -104,0 +245,7 @@ int revpt_capture_cpu_baseline_locked(void)
++	struct revpt_baseline_walk_ctx hyp_ctx = {
++		.owner = OWN_HYP,
++		.ref_type = REVPT_REF_HYP_CPU,
++		.borrow_access = ACC_HYP_CPU,
++		.pass = pass,
++		.cpu_snapshot_pages = cpu_snapshot_pages,
++	};
+@@ -107 +254 @@ int revpt_capture_cpu_baseline_locked(void)
+-		.arg = NULL,
++		.arg = &hyp_ctx,
+@@ -110,20 +257 @@ int revpt_capture_cpu_baseline_locked(void)
+-	struct kvm_shadow_vm *locked_vms[KVM_MAX_PVMS];
+-	int i, nr_locked = 0, ret;
+-
+-	/*
+-	 * 为了尽量保证“初始状态”一致性：
+-	 * 先拿齐所有相关页表锁，再统一遍历。
+-	 */
+-	hyp_spin_lock(&pkvm_pgd_lock);
+-	for (i = 0; i < KVM_MAX_PVMS; i++) {
+-		struct kvm_shadow_vm *vm;
+-
+-		vm = pkvm_shadow_table_get(index_to_shadow_handle(i));
+-		if (!vm)
+-			continue;
+-		hyp_spin_lock(&vm->lock);
+-		locked_vms[nr_locked++] = vm;
+-	}
+-
+-	/* 新语义：从页表快照重建 rev_pt 起始状态。 */
+-	revpt_reset_all();
++	int i, ret;
+@@ -134 +262 @@ int revpt_capture_cpu_baseline_locked(void)
+-		goto out_unlock;
++		return ret;
+@@ -139 +267 @@ int revpt_capture_cpu_baseline_locked(void)
+-		goto out_unlock;
++		return ret;
+@@ -144,0 +273,3 @@ int revpt_capture_cpu_baseline_locked(void)
++			.borrow_access = ACC_ENCLAVE_CPU,
++			.pass = pass,
++			.cpu_snapshot_pages = cpu_snapshot_pages,
+@@ -156 +287,20 @@ int revpt_capture_cpu_baseline_locked(void)
+-			goto out_unlock;
++			return ret;
++	}
++
++	return 0;
++}
++
++int revpt_capture_cpu_baseline_locked(u64 *cpu_snapshot_pages)
++{
++	struct kvm_shadow_vm *locked_vms[KVM_MAX_PVMS];
++	int i, nr_locked = 0, ret;
++
++	hyp_spin_lock(&pkvm_pgd_lock);
++	for (i = 0; i < KVM_MAX_PVMS; i++) {
++		struct kvm_shadow_vm *vm;
++
++		vm = pkvm_shadow_table_get(index_to_shadow_handle(i));
++		if (!vm)
++			continue;
++		hyp_spin_lock(&vm->lock);
++		locked_vms[nr_locked++] = vm;
+@@ -158,0 +309,19 @@ int revpt_capture_cpu_baseline_locked(void)
++	ret = revpt_walk_cpu_tables_pass_locked(REVPT_CPU_PASS_OWNER,
++						locked_vms,
++						nr_locked,
++						cpu_snapshot_pages);
++	if (ret)
++		goto out_unlock;
++
++	ret = revpt_walk_cpu_tables_pass_locked(REVPT_CPU_PASS_BORROW_ACCESS,
++						locked_vms,
++						nr_locked,
++						cpu_snapshot_pages);
++	if (ret)
++		goto out_unlock;
++
++	ret = revpt_walk_cpu_tables_pass_locked(REVPT_CPU_PASS_REF,
++						locked_vms,
++						nr_locked,
++						cpu_snapshot_pages);
++
+diff --git a/arch/arm64/kvm/iommu.c b/arch/arm64/kvm/iommu.c
+index 824c28179..deb7d3a13 100644
+--- a/arch/arm64/kvm/iommu.c
++++ b/arch/arm64/kvm/iommu.c
+@@ -170 +170 @@ EXPORT_SYMBOL_GPL(pkvm_iommu_rk_disable);
+-int pkvm_revpt_set_host_dma_domain(unsigned int domain_id)
++int pkvm_revpt_start_test(const struct pkvm_asgard_test_cfg *cfg)
+@@ -172 +172 @@ int pkvm_revpt_set_host_dma_domain(unsigned int domain_id)
+-	return kvm_call_hyp_nvhe(__pkvm_revpt_set_host_dma_domain, domain_id);
++	return kvm_call_hyp_nvhe(__pkvm_revpt_start_test, cfg);
+@@ -174 +174 @@ int pkvm_revpt_set_host_dma_domain(unsigned int domain_id)
+-EXPORT_SYMBOL_GPL(pkvm_revpt_set_host_dma_domain);
++EXPORT_SYMBOL_GPL(pkvm_revpt_start_test);
+@@ -176 +176 @@ EXPORT_SYMBOL_GPL(pkvm_revpt_set_host_dma_domain);
+-int pkvm_revpt_sync(void)
++int pkvm_revpt_sync_test(void)
+@@ -178 +178 @@ int pkvm_revpt_sync(void)
+-	return kvm_call_hyp_nvhe(__pkvm_revpt_sync);
++	return kvm_call_hyp_nvhe(__pkvm_revpt_sync_test);
+@@ -180 +180 @@ int pkvm_revpt_sync(void)
+-EXPORT_SYMBOL_GPL(pkvm_revpt_sync);
++EXPORT_SYMBOL_GPL(pkvm_revpt_sync_test);
+@@ -189,6 +188,0 @@ EXPORT_SYMBOL_GPL(pkvm_revpt_get_violations);
+-
+-int pkvm_revpt_capture_baseline(void)
+-{
+-	return kvm_call_hyp_nvhe(__pkvm_revpt_capture_baseline);
+-}
+-EXPORT_SYMBOL_GPL(pkvm_revpt_capture_baseline);
+diff --git a/arch/arm64/kvm/pkvm_asgard.c b/arch/arm64/kvm/pkvm_asgard.c
+index 7f91c082e..b76a436a7 100644
+--- a/arch/arm64/kvm/pkvm_asgard.c
++++ b/arch/arm64/kvm/pkvm_asgard.c
+@@ -10,0 +11,2 @@
++#define PKVM_ASGARD_MAX_IOCTL_VIOLATIONS 256U
++
+@@ -16,2 +18,3 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
+-	case PKVM_ASGARD_IOC_SET_HOST_DMA_DOMAIN: {
+-		u32 domain;
++	case PKVM_ASGARD_IOC_START_TEST: {
++		struct pkvm_asgard_test_cfg *cfg;
++		int ret;
+@@ -19 +22,5 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
+-		if (copy_from_user(&domain, (void __user *)arg, sizeof(domain)))
++		cfg = kmalloc(sizeof(*cfg), GFP_KERNEL);
++		if (!cfg)
++			return -ENOMEM;
++		if (copy_from_user(cfg, (void __user *)arg, sizeof(*cfg))) {
++			kfree(cfg);
+@@ -21 +28,4 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
+-		return pkvm_revpt_set_host_dma_domain(domain);
++		}
++		ret = pkvm_revpt_start_test(cfg);
++		kfree(cfg);
++		return ret;
+@@ -23,6 +33,2 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
+-	case PKVM_ASGARD_IOC_RECHECK_LEDGER:
+-		/* 保留全量复检能力（旧 sync 语义）。 */
+-		return pkvm_revpt_sync();
+-	case PKVM_ASGARD_IOC_CAPTURE_BASELINE:
+-		/* 新语义：锁定时刻并重建 rev_pt 初始状态（来自页表遍历）。 */
+-		return pkvm_revpt_capture_baseline();
++	case PKVM_ASGARD_IOC_SYNC_TEST:
++		return pkvm_revpt_sync_test();
+@@ -33 +39,2 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
+-		u32 copied = 0, total = 0;
++		u32 *copied;
++		u32 *total;
+@@ -37,0 +45,10 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
++		if (q.capacity > PKVM_ASGARD_MAX_IOCTL_VIOLATIONS)
++			return -E2BIG;
++
++		copied = kmalloc(sizeof(*copied), GFP_KERNEL);
++		total = kmalloc(sizeof(*total), GFP_KERNEL);
++		if (!copied || !total) {
++			kfree(copied);
++			kfree(total);
++			return -ENOMEM;
++		}
+@@ -40,2 +57,4 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
+-			kbuf = kvmalloc_array(q.capacity, sizeof(*kbuf), GFP_KERNEL);
+-			if (!kbuf)
++			kbuf = kmalloc_array(q.capacity, sizeof(*kbuf), GFP_KERNEL);
++			if (!kbuf) {
++				kfree(copied);
++				kfree(total);
+@@ -42,0 +62 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
++			}
+@@ -45 +65 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
+-		ret = pkvm_revpt_get_violations(kbuf, q.capacity, &copied, &total);
++		ret = pkvm_revpt_get_violations(kbuf, q.capacity, copied, total);
+@@ -49,2 +69,2 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
+-		if (copied && copy_to_user((void __user *)(uintptr_t)q.user_buf,
+-					   kbuf, copied * sizeof(*kbuf))) {
++		if (*copied && copy_to_user((void __user *)(uintptr_t)q.user_buf,
++					   kbuf, (*copied) * sizeof(*kbuf))) {
+@@ -55,2 +75,2 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
+-		q.copied = copied;
+-		q.total = total;
++		q.copied = *copied;
++		q.total = *total;
+@@ -60 +80,3 @@ static long pkvm_asgard_ioctl(struct file *file, unsigned int cmd,
+-		kvfree(kbuf);
++		kfree(kbuf);
++		kfree(copied);
++		kfree(total);
+diff --git a/asgard-tools/capture_baseline.c b/asgard-tools/capture_baseline.c
+deleted file mode 100644
+index d2718fdd9..000000000
+--- a/asgard-tools/capture_baseline.c
++++ /dev/null
+@@ -1,23 +0,0 @@
+-#include <fcntl.h>
+-#include "pkvm_asgard_uapi.h"
+-#include <stdio.h>
+-#include <sys/ioctl.h>
+-#include <unistd.h>
+-
+-/* 用途：命令 pkvm 锁定并遍历所有主体页表，重建 rev_pt 初始状态。 */
+-int main(void)
+-{
+-	int fd = open("/dev/pkvm_asgard", O_RDWR);
+-	if (fd < 0) {
+-		perror("open /dev/pkvm_asgard");
+-		return 1;
+-	}
+-	if (ioctl(fd, PKVM_ASGARD_IOC_CAPTURE_BASELINE) < 0) {
+-		perror("ioctl CAPTURE_BASELINE");
+-		close(fd);
+-		return 1;
+-	}
+-	puts("revpt baseline captured from pagetables");
+-	close(fd);
+-	return 0;
+-}
+diff --git a/asgard-tools/dump_violations.c b/asgard-tools/dump_violations.c
+index c22c561d2..25364cbd5 100644
+--- a/asgard-tools/dump_violations.c
++++ b/asgard-tools/dump_violations.c
+@@ -12,0 +13,8 @@ static void print_reason(uint32_t r)
++	if (r & (1u << 1))
++		printf(" UNTRACKED_HAS_STATE");
++	if (r & (1u << 2))
++		printf(" FREE_HAS_ACCESS");
++	if (r & (1u << 3))
++		printf(" FREE_HAS_REFS");
++	if (r & (1u << 8))
++		printf(" HOST_CPU_DISALLOWED");
+@@ -14,0 +23,2 @@ static void print_reason(uint32_t r)
++	if (r & (1u << 10))
++		printf(" ENCL_CPU_DISALLOWED");
+@@ -16,0 +27,2 @@ static void print_reason(uint32_t r)
++	if (r & (1u << 12))
++		printf(" HYP_CPU_DISALLOWED");
+@@ -24 +35,0 @@ static void print_reason(uint32_t r)
+-/* 用途：板端直接运行的最小测试工具。 */
+@@ -57,3 +68,11 @@ int main(int argc, char **argv)
+-		printf("[%u] pfn=0x%llx owner=%u host_dma_ref=%u encl_dma_ref=%u ",
+-		       i, (unsigned long long)buf[i].pfn, buf[i].info.owner,
+-		       buf[i].info.host_dev_refs, buf[i].info.enclave_dev_refs);
++		printf("[%u] pfn=0x%llx owner=%u allowed=0x%x flags=0x%x host_refs=%u host_dev_refs=%u enclave_refs=%u enclave_dev_refs=%u hyp_refs=%u generation=%u ",
++		       i, (unsigned long long)buf[i].pfn,
++		       buf[i].info.owner,
++		       buf[i].info.allowed_mask,
++		       buf[i].info.flags,
++		       buf[i].info.host_refs,
++		       buf[i].info.host_dev_refs,
++		       buf[i].info.enclave_refs,
++		       buf[i].info.enclave_dev_refs,
++		       buf[i].info.hyp_refs,
++		       buf[i].info.generation);
+diff --git a/asgard-tools/pkvm_asgard_uapi.h b/asgard-tools/pkvm_asgard_uapi.h
+index 35d35ad92..b6e30a9fb 100644
+--- a/asgard-tools/pkvm_asgard_uapi.h
++++ b/asgard-tools/pkvm_asgard_uapi.h
+@@ -33,0 +34,8 @@ struct pkvm_asgard_violation_query {
++struct pkvm_asgard_test_cfg {
++	uint64_t hpa_start;
++	uint64_t hpa_size;
++	uint32_t host_dma_domain;
++	uint32_t reserved;
++};
++
++
+@@ -35,7 +43,4 @@ struct pkvm_asgard_violation_query {
+-#define PKVM_ASGARD_IOC_SET_HOST_DMA_DOMAIN \
+-	_IOW(PKVM_ASGARD_IOC_MAGIC, 0x01, uint32_t)
+-#define PKVM_ASGARD_IOC_RECHECK_LEDGER _IO(PKVM_ASGARD_IOC_MAGIC, 0x02)
+-#define PKVM_ASGARD_IOC_SYNC_LEDGER PKVM_ASGARD_IOC_RECHECK_LEDGER
+-#define PKVM_ASGARD_IOC_GET_VIOLATIONS \
+-	_IOWR(PKVM_ASGARD_IOC_MAGIC, 0x03, struct pkvm_asgard_violation_query)
+-#define PKVM_ASGARD_IOC_CAPTURE_BASELINE _IO(PKVM_ASGARD_IOC_MAGIC, 0x04)
++#define PKVM_ASGARD_IOC_START_TEST 	_IOW(PKVM_ASGARD_IOC_MAGIC, 0x01, struct pkvm_asgard_test_cfg)
++#define PKVM_ASGARD_IOC_SYNC_TEST _IO(PKVM_ASGARD_IOC_MAGIC, 0x02)
++#define PKVM_ASGARD_IOC_GET_VIOLATIONS 	_IOWR(PKVM_ASGARD_IOC_MAGIC, 0x03, struct pkvm_asgard_violation_query)
++
+diff --git a/asgard-tools/set_host_dma_domain.c b/asgard-tools/set_host_dma_domain.c
+deleted file mode 100644
+index 3473d8ffe..000000000
+--- a/asgard-tools/set_host_dma_domain.c
++++ /dev/null
+@@ -1,33 +0,0 @@
+-#include <fcntl.h>
+-#include "pkvm_asgard_uapi.h"
+-#include <stdint.h>
+-#include <stdio.h>
+-#include <stdlib.h>
+-#include <sys/ioctl.h>
+-#include <unistd.h>
+-
+-/* 用途：板端直接运行的最小测试工具。 */
+-int main(int argc, char **argv)
+-{
+-	uint32_t domain;
+-	int fd;
+-
+-	if (argc != 2) {
+-		fprintf(stderr, "Usage: %s <domain_id>\n", argv[0]);
+-		return 1;
+-	}
+-	domain = (uint32_t)strtoul(argv[1], NULL, 0);
+-	fd = open("/dev/pkvm_asgard", O_RDWR);
+-	if (fd < 0) {
+-		perror("open /dev/pkvm_asgard");
+-		return 1;
+-	}
+-	if (ioctl(fd, PKVM_ASGARD_IOC_SET_HOST_DMA_DOMAIN, &domain) < 0) {
+-		perror("ioctl SET_HOST_DMA_DOMAIN");
+-		close(fd);
+-		return 1;
+-	}
+-	printf("host dma domain set to %u\n", domain);
+-	close(fd);
+-	return 0;
+-}
+diff --git a/asgard-tools/start_test.c b/asgard-tools/start_test.c
+new file mode 100644
+index 000000000..e8fccbca7
+--- /dev/null
++++ b/asgard-tools/start_test.c
+@@ -0,0 +1,41 @@
++#include <fcntl.h>
++#include "pkvm_asgard_uapi.h"
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <sys/ioctl.h>
++#include <unistd.h>
++
++int main(int argc, char **argv)
++{
++	struct pkvm_asgard_test_cfg cfg = {0};
++	int fd;
++
++	if (argc != 4) {
++		fprintf(stderr, "usage: %s <hpa_start> <hpa_size> <host_dma_domain>\n", argv[0]);
++		return 1;
++	}
++
++	cfg.hpa_start = strtoull(argv[1], NULL, 0);
++	cfg.hpa_size = strtoull(argv[2], NULL, 0);
++	cfg.host_dma_domain = (uint32_t)strtoul(argv[3], NULL, 0);
++
++	fd = open("/dev/pkvm_asgard", O_RDWR);
++	if (fd < 0) {
++		perror("open /dev/pkvm_asgard");
++		return 1;
++	}
++
++	if (ioctl(fd, PKVM_ASGARD_IOC_START_TEST, &cfg) < 0) {
++		perror("ioctl START_TEST");
++		close(fd);
++		return 1;
++	}
++
++	printf("revpt START_TEST ok: hpa_start=0x%llx hpa_size=0x%llx host_dma_domain=%u\n",
++	       (unsigned long long)cfg.hpa_start,
++	       (unsigned long long)cfg.hpa_size,
++	       cfg.host_dma_domain);
++	close(fd);
++	return 0;
++}
+diff --git a/asgard-tools/recheck_revpt.c b/asgard-tools/sync_test.c
+similarity index 60%
+rename from asgard-tools/recheck_revpt.c
+rename to asgard-tools/sync_test.c
+index 0025a9c36..2f623097d 100644
+--- a/asgard-tools/recheck_revpt.c
++++ b/asgard-tools/sync_test.c
+@@ -7 +6,0 @@
+-/* 用途：保留的全量复检工具（旧 sync 语义）。 */
+@@ -10,0 +10 @@ int main(void)
++
+@@ -15,2 +15,3 @@ int main(void)
+-	if (ioctl(fd, PKVM_ASGARD_IOC_RECHECK_LEDGER) < 0) {
+-		perror("ioctl RECHECK_LEDGER");
++
++	if (ioctl(fd, PKVM_ASGARD_IOC_SYNC_TEST) < 0) {
++		perror("ioctl SYNC_TEST");
+@@ -20 +21,2 @@ int main(void)
+-	puts("revpt full recheck done");
++
++	puts("revpt SYNC_TEST done");
+diff --git a/include/uapi/linux/pkvm_asgard.h b/include/uapi/linux/pkvm_asgard.h
+index 96eb971f6..8dcb562a0 100644
+--- a/include/uapi/linux/pkvm_asgard.h
++++ b/include/uapi/linux/pkvm_asgard.h
+@@ -36,0 +37,7 @@ struct pkvm_asgard_violation_query {
++struct pkvm_asgard_test_cfg {
++	__u64 hpa_start;
++	__u64 hpa_size;
++	__u32 host_dma_domain;
++	__u32 reserved;
++};
++
+@@ -38,7 +45,4 @@ struct pkvm_asgard_violation_query {
+-#define PKVM_ASGARD_IOC_SET_HOST_DMA_DOMAIN \
+-	_IOW(PKVM_ASGARD_IOC_MAGIC, 0x01, __u32)
+-#define PKVM_ASGARD_IOC_RECHECK_LEDGER _IO(PKVM_ASGARD_IOC_MAGIC, 0x02)
+-#define PKVM_ASGARD_IOC_SYNC_LEDGER PKVM_ASGARD_IOC_RECHECK_LEDGER /* 兼容旧名 */
+-#define PKVM_ASGARD_IOC_GET_VIOLATIONS \
+-	_IOWR(PKVM_ASGARD_IOC_MAGIC, 0x03, struct pkvm_asgard_violation_query)
+-#define PKVM_ASGARD_IOC_CAPTURE_BASELINE _IO(PKVM_ASGARD_IOC_MAGIC, 0x04)
++#define PKVM_ASGARD_IOC_START_TEST 	_IOW(PKVM_ASGARD_IOC_MAGIC, 0x01, struct pkvm_asgard_test_cfg)
++#define PKVM_ASGARD_IOC_SYNC_TEST _IO(PKVM_ASGARD_IOC_MAGIC, 0x02)
++#define PKVM_ASGARD_IOC_GET_VIOLATIONS 	_IOWR(PKVM_ASGARD_IOC_MAGIC, 0x03, struct pkvm_asgard_violation_query)
++

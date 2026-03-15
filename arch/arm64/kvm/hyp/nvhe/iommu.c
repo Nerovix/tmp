@@ -785,7 +785,7 @@ bool pkvm_iommu_host_dabt_handler(struct kvm_cpu_context *host_ctxt, u32 esr,
 		} else {
 			if (!dev->ops->host_dabt_handler ||
 			    !dev->ops->host_dabt_handler(dev, host_ctxt, esr,
-							 pa, NULL))
+							 pa, 0))
 				return false;
 		}
 
