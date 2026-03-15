@@ -474,7 +474,7 @@ int __pkvm_iommu_finalize(void)
 int __pkvm_iommu_alloc_domain(unsigned int domain_id, u32 type)
 {
 	struct pkvm_iommu *dev;
-	int ret;
+	int ret = 0;
 
 	assert_host_component_locked();
 
@@ -918,6 +918,55 @@ static void revpt_unlock_all_iopt_locked(void)
 	}
 }
 
+static int revpt_iommu_walk_noop_cb(unsigned int domain_id, u64 iova,
+					    phys_addr_t pa, u64 pte, void *arg)
+{
+	(void)domain_id;
+	(void)iova;
+	(void)pa;
+	(void)pte;
+	(void)arg;
+
+	return 0;
+}
+
+/* Ensure host DMA domain exists before START_TEST snapshot scan. */
+static int revpt_ensure_host_dma_domain_locked(unsigned int domain_id)
+{
+	struct pkvm_iommu *dev;
+	int (*matched_walk_fn)(unsigned int, pkvm_iopt_walk_cb_t, void *) = NULL;
+	int ret;
+
+	list_for_each_entry (dev, &iommu_list, list) {
+		int (*walk_fn)(unsigned int, pkvm_iopt_walk_cb_t, void *);
+
+		walk_fn = dev->ops->walk_iopt;
+		if (!walk_fn)
+			continue;
+		if (matched_walk_fn == walk_fn)
+			continue;
+
+		ret = walk_fn(domain_id, revpt_iommu_walk_noop_cb, NULL);
+		if (ret == -ENOENT)
+			continue;
+		if (ret < 0)
+			return ret;
+		if (matched_walk_fn)
+			return -EEXIST;
+
+		matched_walk_fn = walk_fn;
+	}
+
+	if (matched_walk_fn)
+		return 0;
+
+	ret = __pkvm_iommu_alloc_domain(domain_id, 0);
+	if (ret == -EEXIST)
+		return 0;
+
+	return ret;
+}
+
 static int revpt_scan_iommu_locked(u64 *host_dma_snapshot_ptes)
 {
 	struct pkvm_iommu *dev;
@@ -980,6 +1029,9 @@ static int revpt_rebuild_snapshot_locked(u64 *cpu_snapshot_pages,
 	return 0;
 }
 
+
+
+
 int __pkvm_revpt_start_test(const struct pkvm_asgard_test_cfg *cfg)
 {
 	u64 cpu_snapshot_pages, host_dma_snapshot_ptes;
@@ -1016,6 +1068,11 @@ int __pkvm_revpt_start_test(const struct pkvm_asgard_test_cfg *cfg)
 	     old_nr_pages != (cfg->hpa_size >> PAGE_SHIFT)))
 		revpt_reset_range(old_start_pfn, old_nr_pages);
 
+	ret = revpt_ensure_host_dma_domain_locked(cfg->host_dma_domain);
+	if (ret)
+		goto out_unlock;
+
+
 	ret = revpt_lock_all_iopt_locked();
 	if (!ret) {
 		ret = revpt_rebuild_snapshot_locked(&cpu_snapshot_pages,
@@ -1026,6 +1083,7 @@ int __pkvm_revpt_start_test(const struct pkvm_asgard_test_cfg *cfg)
 	if (!ret)
 		revpt_test_cfg.snapshot_valid = true;
 
+	out_unlock:
 	host_unlock_component();
 	return ret;
 }

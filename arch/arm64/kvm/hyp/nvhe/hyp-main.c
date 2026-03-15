@@ -1244,6 +1244,8 @@ static int stage2_collect_cb(u64 addr, u64 end, u32 level,
 	if (!kvm_pte_valid(pte))
 		return 0;
 
+	if((pte>>55&15)==1)return 0;
+
 	phys = kvm_pgtable_stage2_pte_phys(pte);
 	if (ctx->phys_l <= phys && phys < ctx->phys_r) {
 		if (ctx->cnt >= ctx->cap) {

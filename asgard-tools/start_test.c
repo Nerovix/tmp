@@ -10,6 +10,7 @@ int main(int argc, char **argv)
 {
 	struct pkvm_asgard_test_cfg cfg = {0};
 	int fd;
+	int ret;
 
 	if (argc != 4) {
 		fprintf(stderr, "usage: %s <hpa_start> <hpa_size> <host_dma_domain>\n", argv[0]);
@@ -26,13 +27,15 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (ioctl(fd, PKVM_ASGARD_IOC_START_TEST, &cfg) < 0) {
+	ret = ioctl(fd, PKVM_ASGARD_IOC_START_TEST, &cfg);
+	if (ret < 0) {
 		perror("ioctl START_TEST");
 		close(fd);
 		return 1;
 	}
 
-	printf("revpt START_TEST ok: hpa_start=0x%llx hpa_size=0x%llx host_dma_domain=%u\n",
+	printf("revpt START_TEST ok: ret=%d hpa_start=0x%llx hpa_size=0x%llx host_dma_domain=%u\n",
+	       ret,
 	       (unsigned long long)cfg.hpa_start,
 	       (unsigned long long)cfg.hpa_size,
 	       cfg.host_dma_domain);
