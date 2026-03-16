@@ -1309,14 +1309,21 @@ static void handle___pkvm_view_stage2_pt(struct kvm_cpu_context *host_ctxt)
 	if (vm_handle == 0) {
 		hyp_spin_lock(&host_kvm.lock);
 		struct kvm_pgtable *pgt = &host_kvm.pgt;
-
 		ret = pt_walk_collect(pgt, walker, 0, 1ull << pgt->ia_bits);
 		hyp_spin_unlock(&host_kvm.lock);
-	} else {
+	} 
+	else if (vm_handle == -1) {
+		hyp_spin_lock(&pkvm_pgd_lock);
+		ret = pt_walk_collect(&pkvm_pgtable, walker, 0,
+				     1ull << pkvm_pgtable.ia_bits);
+		hyp_spin_unlock(&pkvm_pgd_lock);
+	}
+	else {
 		get_shadow_lock();
 		struct kvm_shadow_vm *vm = pkvm_shadow_table_get(vm_handle);
 		if (!vm) {
 			ret = -EINVAL;
+			put_shadow_lock();
 			goto unpin;
 		}
 		put_shadow_lock();
@@ -1379,6 +1386,17 @@ static u64 get_stage2_pt_size(int vm_handle)
 
 		ret = kvm_pgtable_walk(pgt, 0, (1ULL << pgt->ia_bits), &walker);
 		hyp_spin_unlock(&host_kvm.lock);
+	} else if (vm_handle == -1) {
+		hyp_spin_lock(&pkvm_pgd_lock);
+		pgt = &pkvm_pgtable;
+
+		if (!pgt) {
+			hyp_spin_unlock(&pkvm_pgd_lock);
+			return -EFAULT;
+		}
+
+		ret = kvm_pgtable_walk(pgt, 0, (1ULL << pgt->ia_bits), &walker);
+		hyp_spin_unlock(&pkvm_pgd_lock);
 	} else {
 		get_shadow_lock();
 		struct kvm_shadow_vm *vm = pkvm_shadow_table_get(vm_handle);

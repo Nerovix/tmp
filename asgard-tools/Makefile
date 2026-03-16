@@ -2,7 +2,7 @@ OUT_DIR = build
 CC      = aarch64-linux-gnu-gcc
 RM      = rm -f
 
-TOOLS = dump_violations start_test sync_test
+TOOLS = dump_violations start_test sync_test view_stage2_pt iopttool
 BINARIES = $(addprefix $(OUT_DIR)/,$(TOOLS))
 
 all: $(BINARIES)
