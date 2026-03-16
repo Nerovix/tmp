@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
 #include <stdio.h>
-#include <stdlib.h>、
+#include <stdlib.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -25,7 +25,7 @@ int main(void) {
   printf("There are %d shadow VMs.\n", vm_num);
   for (int i = 0; i < vm_num; i++)
     printf("shadow handle[%d] = %u\n", i, shadow_handles[i]);
-  printf("Input handle (0 for host): ");
+  printf("Input handle (0 for host, -1 for pkvm): ");
   int vm_handle;
   scanf("%d", &vm_handle);
   int good = 0;
@@ -38,6 +38,7 @@ int main(void) {
     printf("Invalid handle %d\n", vm_handle);
     return -1;
   }
+
   printf("page cnt = %ld\n", syscall(__NR_stage2_pt_count,vm_handle));
   unsigned long long L = 0x00000000, R = 0x10000000000;
   char L_str[100], R_str[100];
@@ -51,7 +52,19 @@ int main(void) {
     L=0;
     R=0x10000000000;
   }
-  long long ret = syscall(__NR_view_stage2_pt, L, R, vm_handle, pool);
+
+  int sw = 0;
+  char sw_str[100];
+  printf("Software bits (0-15, default 0): ");
+  scanf("%s", sw_str);
+  if(sw_str[0]=='\0')sw=0;
+  else sw=(int)strtoul(sw_str,NULL,0);
+  if(sw<0||sw>15){
+    printf("Invalid software bits\n");
+    return -1;
+  }
+
+  long long ret = syscall(__NR_view_stage2_pt, L, R, vm_handle, sw, pool);
   printf("L = 0x%llx, R = 0x%llx\n", L, R);
   if (ret < 0) {
     printf("view_stage2_pt failed: %lld\n", ret);

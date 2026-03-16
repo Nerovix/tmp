@@ -57,8 +57,8 @@ SYSCALL_DEFINE1(arm64_personality, unsigned int, personality)
 #define u32 unsigned int
 #endif
 
-SYSCALL_DEFINE4(view_stage2_pt, phys_addr_t, phys_l, phys_addr_t, phys_r, int,
-		vm_handle, u64 __user *, user_pool)
+SYSCALL_DEFINE5(view_stage2_pt, phys_addr_t, phys_l, phys_addr_t, phys_r, int,
+		vm_handle, int, sw, u64 __user *, user_pool)
 {
 #define cap (1 << 15)
 	struct arm_smccc_res res;
@@ -104,7 +104,7 @@ SYSCALL_DEFINE4(view_stage2_pt, phys_addr_t, phys_l, phys_addr_t, phys_r, int,
 
 	arm_smccc_hvc(
 		KVM_HOST_SMCCC_ID(__KVM_HOST_SMCCC_FUNC___pkvm_view_stage2_pt),
-		(unsigned long)pool, cap, phys_l, phys_r, vm_handle, 0, 0,
+		(unsigned long)pool, cap, phys_l, phys_r, vm_handle, sw, 0,
 		&res);
 
 	ret = res.a1;

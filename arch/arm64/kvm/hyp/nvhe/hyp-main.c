@@ -1232,6 +1232,7 @@ struct stage2_collect_ctx {
 	u64 cnt;
 	phys_addr_t phys_l;
 	phys_addr_t phys_r;
+	int sw;
 };
 
 static int stage2_collect_cb(u64 addr, u64 end, u32 level,
@@ -1244,7 +1245,7 @@ static int stage2_collect_cb(u64 addr, u64 end, u32 level,
 	if (!kvm_pte_valid(pte))
 		return 0;
 
-	if((pte>>55&15)==1)return 0;
+	if((pte>>55&15)!=ctx->sw)return 0;
 
 	phys = kvm_pgtable_stage2_pte_phys(pte);
 	if (ctx->phys_l <= phys && phys < ctx->phys_r) {
@@ -1281,6 +1282,7 @@ static void handle___pkvm_view_stage2_pt(struct kvm_cpu_context *host_ctxt)
 	DECLARE_REG(u64, l, host_ctxt, 3);
 	DECLARE_REG(u64, r, host_ctxt, 4);
 	DECLARE_REG(int, vm_handle, host_ctxt, 5);
+	DECLARE_REG(int, sw, host_ctxt, 6);
 
 	u8 *base = kern_hyp_va(pool_hva);
 	size_t bytes = cap * 4 * sizeof(u64);
@@ -1298,6 +1300,7 @@ static void handle___pkvm_view_stage2_pt(struct kvm_cpu_context *host_ctxt)
 		.cnt = 0,
 		.phys_l = l,
 		.phys_r = r,
+		.sw = sw,
 	};
 
 	struct kvm_pgtable_walker walker = {
