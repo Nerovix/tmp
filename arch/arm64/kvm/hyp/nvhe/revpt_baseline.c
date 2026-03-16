@@ -164,7 +164,7 @@ static int revpt_stage2_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
 		return 0;
 
 	pa = revpt_stage2_pte_phys(pte);
-	if (!revpt_pa_overlap_enabled(pa, end - start, &clip_pfn, &clip_pages))
+	if (!revpt_pa_overlap_enabled(pa, kvm_granule_size(level), &clip_pfn, &clip_pages))
 		return 0;
 
 	switch (ctx->pass) {
@@ -200,7 +200,7 @@ static int revpt_hyp_walk_cb(u64 start, u64 end, u32 level, kvm_pte_t *ptep,
 		return 0;
 
 	pa = (phys_addr_t)(pte & KVM_PTE_ADDR_MASK);
-	if (!revpt_pa_overlap_enabled(pa, end - start, &clip_pfn, &clip_pages))
+	if (!revpt_pa_overlap_enabled(pa, kvm_granule_size(level), &clip_pfn, &clip_pages))
 		return 0;
 
 	switch (ctx->pass) {
