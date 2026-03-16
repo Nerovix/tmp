@@ -12,6 +12,7 @@
 #include "linux/usb.h"
 #include "nvhe/spinlock.h"
 #include <kvm/arm_hypercalls.h>
+#include <linux/overflow.h>
 
 #include <hyp/adjust_pc.h>
 
@@ -1223,7 +1224,6 @@ static inline phys_addr_t kvm_pgtable_stage2_pte_phys(kvm_pte_t pte)
 extern struct host_kvm host_kvm;
 
 struct stage2_collect_ctx {
-	// u64 *meta;
 	u64 *ipa;
 	u64 *pa;
 	u64 *level;
@@ -1235,29 +1235,51 @@ struct stage2_collect_ctx {
 	int sw;
 };
 
+static inline bool stage2_pa_overlaps(phys_addr_t map_pa, u64 map_size,
+				      phys_addr_t want_l, phys_addr_t want_r)
+{
+	phys_addr_t map_end;
+
+	if (!map_size)
+		return false;
+	if (want_l >= want_r)
+		return true;
+	if (check_add_overflow(map_pa, map_size, &map_end))
+		map_end = ~(phys_addr_t)0;
+
+	return map_end > want_l && map_pa < want_r;
+}
+
 static int stage2_collect_cb(u64 addr, u64 end, u32 level,
 			     kvm_pte_t *const ptep,
 			     enum kvm_pgtable_walk_flags flag, void *const arg)
 {
 	struct stage2_collect_ctx *ctx = arg;
 	phys_addr_t phys;
+	u64 map_size;
 	kvm_pte_t pte = READ_ONCE(*ptep);
+
 	if (!kvm_pte_valid(pte))
 		return 0;
 
-	if((pte>>55&15)!=ctx->sw)return 0;
+	if (((pte >> 55) & 15) != ctx->sw)
+		return 0;
 
 	phys = kvm_pgtable_stage2_pte_phys(pte);
-	if (ctx->phys_l <= phys && phys < ctx->phys_r) {
-		if (ctx->cnt >= ctx->cap) {
-			ctx->cnt++;
-		} else {
-			ctx->ipa[ctx->cnt] = addr;
-			ctx->pa[ctx->cnt] = phys;
-			ctx->level[ctx->cnt] = level;
-			ctx->pte[ctx->cnt] = pte;
-			ctx->cnt++;
-		}
+
+	/* 'end' is the walk limit, not the current entry end. */
+	map_size = kvm_granule_size(level);
+	if (!stage2_pa_overlaps(phys, map_size, ctx->phys_l, ctx->phys_r))
+		return 0;
+
+	if (ctx->cnt >= ctx->cap) {
+		ctx->cnt++;
+	} else {
+		ctx->ipa[ctx->cnt] = addr;
+		ctx->pa[ctx->cnt] = phys;
+		ctx->level[ctx->cnt] = level;
+		ctx->pte[ctx->cnt] = pte;
+		ctx->cnt++;
 	}
 	return 0;
 }
