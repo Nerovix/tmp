@@ -223,18 +223,16 @@ static typeof(rk_iommu_domain_id_get) *rk_iommu_domain_id_fn;
 static int printk_devname(struct device *dev, void *data)
 {
 	struct iommu_domain *domain;
-	int domain_id;
+	int domain_id = -1;
 	domain = iommu_get_domain_for_dev(dev);
 	if (!domain)
 		return 0;
 	dev_count++;
-	printk("ls_dev: %s, ", dev_name(dev));
-	domain_id = rk_iommu_domain_id_fn(domain);
-	if (domain_id < 0) {
-		printk("not a rk_iommu_domain\n");
-	} else {
-		printk("domain_id = %d\n", domain_id);
-	}
+	if (rk_iommu_domain_id_fn)
+		domain_id = rk_iommu_domain_id_fn(domain);
+	if (domain_id < 0)
+		domain_id = -1;
+	printk("ls_dev: %s, domain_id = %d\n", dev_name(dev), domain_id);
 	return 0;
 }
 #define VDEV_MAX 50
@@ -257,9 +255,15 @@ SYSCALL_DEFINE0(ls_devices)
 	}
 
 	for (i = 0; i < VDEV_MAX; i++) {
+		int domain_id = -1;
+
 		if (domains[i]) {
-			printk("ls_dev: vdev_%d, domain_id = %d, virtual rk iommu domain",
-			       i, rk_iommu_domain_id_fn(domains[i]));
+			if (rk_iommu_domain_id_fn)
+				domain_id = rk_iommu_domain_id_fn(domains[i]);
+			if (domain_id < 0)
+				domain_id = -1;
+			printk("ls_dev: vdev_%d, domain_id = %d, virtual rk iommu domain\n",
+			       i, domain_id);
 			dev_count++;
 		}
 	}
@@ -270,71 +274,85 @@ SYSCALL_DEFINE0(ls_devices)
 	return 0;
 }
 
-int find_iommu_domain_by_dev_name(char *name, struct iommu_domain **out_domain)
-{
-	struct device *dev;
+struct find_iommu_domain_data {
+	int target_domain_id;
 	struct iommu_domain *domain;
+};
 
-	dev = bus_find_device_by_name(&platform_bus_type, NULL, name);
-	if (!dev) {
-		char pre[6];
-		if (strlen(name) >= 6) {
-			strncpy(pre, name, 5);
-			pre[5] = '\0';
-			if (strcmp(pre, "vdev_") == 0) {
-				int vdev_id = 0, i;
-				for (i = 5; i < strlen(name); i++) {
-					vdev_id =
-						vdev_id * 10 + (name[i] - '0');
-				}
-				if (vdev_id >= 0 && vdev_id < VDEV_MAX) {
-					domain = domains[vdev_id];
-					goto found;
-				}
-				printk("view_iopt/iopt_map: invalid virtual device id %d\n",
-				       vdev_id);
-				return -ENODEV;
-			}
-		}
-		printk("view_iopt/iopt_map: cannot find device %s\n", name);
-		return -ENODEV;
-	} else {
-		domain = iommu_get_domain_for_dev(dev);
+static int find_iommu_domain_cb(struct device *dev, void *data)
+{
+	struct find_iommu_domain_data *d = data;
+	struct iommu_domain *domain;
+	int cur_domain_id;
+
+	domain = iommu_get_domain_for_dev(dev);
+	if (!domain)
+		return 0;
+
+	cur_domain_id = rk_iommu_domain_id_fn(domain);
+	if (cur_domain_id != d->target_domain_id)
+		return 0;
+
+	d->domain = domain;
+	return 1;
+}
+
+int find_iommu_domain_by_id(int domain_id, struct iommu_domain **out_domain)
+{
+	struct iommu_domain *domain;
+	struct find_iommu_domain_data data = {
+		.target_domain_id = domain_id,
+		.domain = NULL,
+	};
+	int i;
+	int ret;
+
+	rk_iommu_domain_id_fn = symbol_get(rk_iommu_domain_id_get);
+	if (!rk_iommu_domain_id_fn) {
+		printk("view_iopt/iopt_map: cannot find rk_iommu_domain_id_get, insmod iommu driver first\n");
+		return -EINVAL;
 	}
+
+	for (i = 0; i < VDEV_MAX; i++) {
+		if (!domains[i])
+			continue;
+		if (rk_iommu_domain_id_fn(domains[i]) == domain_id) {
+			domain = domains[i];
+			goto found;
+		}
+	}
+
+	ret = bus_for_each_dev(&platform_bus_type, NULL, &data,
+				       find_iommu_domain_cb);
+	if (ret < 0) {
+		symbol_put(rk_iommu_domain_id_get);
+		return ret;
+	}
+
+	domain = data.domain;
+	if (!domain) {
+		printk("view_iopt/iopt_map: cannot find domain_id %d\n", domain_id);
+		symbol_put(rk_iommu_domain_id_get);
+		return -ENODEV;
+	}
+
 found:
 	if (!domain) {
-		printk("view_iopt: device %s has no iommu domain\n", name);
+		printk("view_iopt: domain_id %d has no iommu domain\n", domain_id);
+		symbol_put(rk_iommu_domain_id_get);
 		return -ENODEV;
 	}
+	symbol_put(rk_iommu_domain_id_get);
 	*out_domain = domain;
 	return 0;
 }
 
-SYSCALL_DEFINE4(view_iopt, char __user *, device_name, phys_addr_t, phys_l,
+SYSCALL_DEFINE4(view_iopt, int, domain_id, phys_addr_t, phys_l,
 		phys_addr_t, phys_r, u64 __user *, user_pool)
 {
 #define cap (1 << 15)
-	char name[100];
 	u64 *pool;
 	int ret = 0;
-	struct iommu_domain *domain;
-	typeof(rk_view_iopt) *view_iopt_fn;
-
-	ret = strncpy_from_user_nofault(name, device_name, 100);
-	if (ret < 0) {
-		printk("view_iopt/iopt_map: copy from user failed\n");
-		return -EFAULT;
-	}
-
-	if ((ret = find_iommu_domain_by_dev_name(name, &domain))) {
-		return ret;
-	}
-
-	view_iopt_fn = symbol_get(rk_view_iopt);
-	if (!view_iopt_fn) {
-		printk("view_iopt: cannot find rk_view_iopt, insmod iommu driver first\n");
-		return -EINVAL;
-	}
 
 	unsigned long bytes;
 	if (check_mul_overflow((u64)cap, (u64)(3 * sizeof(u64)),
@@ -386,8 +404,7 @@ SYSCALL_DEFINE4(view_iopt, char __user *, device_name, phys_addr_t, phys_l,
 		}
 	}
 
-	ret = view_iopt_fn(domain, pool, cap, phys_l, phys_r);
-	symbol_put(rk_view_iopt);
+	ret = pkvm_view_iopt((unsigned int)domain_id, pool, cap, phys_l, phys_r);
 	if (ret < 0) {
 		printk("view_iopt: hypercall view_iopt returned %d\n", ret);
 		for (j = 0; j < nr_pages; j++)
@@ -450,32 +467,14 @@ SYSCALL_DEFINE0(alloc_domain)
 	return domains_count - 1;
 }
 
-SYSCALL_DEFINE3(iopt_map, char __user *, device_name, unsigned long, iova,
+SYSCALL_DEFINE3(iopt_map, int, domain_id, unsigned long, iova,
 		phys_addr_t, pa)
 {
-	char name[100];
 	int ret = 0;
-	struct iommu_domain *domain;
 
-	ret = strncpy_from_user_nofault(name, device_name, 100);
-	if (ret < 0) {
-		printk("iopt_map: copy from user failed\n");
-		return -EFAULT;
-	}
-	if ((ret = find_iommu_domain_by_dev_name(name, &domain))) {
-		return ret;
-	}
-	typeof(rk_iopt_map) *rk_iopt_map_fn;
-	rk_iopt_map_fn = symbol_get(rk_iopt_map);
-	if (!rk_iopt_map_fn) {
-		printk("iopt_map: cannot find rk_iopt_map, insmod iommu driver first\n");
-		return -EINVAL;
-	}
-
-	ret = rk_iopt_map_fn(domain, iova, pa, PAGE_SIZE,
-			     IOMMU_READ | IOMMU_WRITE);
-	symbol_put(rk_iopt_map);
-	printk("iopt_map: rk_iopt_map returned %d\n", ret);
+	ret = pkvm_iommu_map((unsigned int)domain_id, iova, pa, PAGE_SIZE,
+			    IOMMU_READ | IOMMU_WRITE);
+	printk("iopt_map: pkvm_iommu_map returned %d\n", ret);
 	return ret;
 }
 
