@@ -331,3 +331,218 @@ out_unlock:
 	hyp_spin_unlock(&pkvm_pgd_lock);
 	return ret;
 }
+
+static bool revpt_incremental_active(void)
+{
+	return revpt_test_cfg.configured && revpt_test_cfg.snapshot_valid;
+}
+
+static int revpt_clip_phys_range(phys_addr_t phys_start, u64 size,
+				 u64 *clip_pfn, u64 *clip_pages)
+{
+	if (!revpt_incremental_active())
+		return 0;
+
+	if (!revpt_pa_overlap_enabled(phys_start, size, clip_pfn, clip_pages))
+		return 0;
+
+	return 1;
+}
+
+static int revpt_owner_to_cpu_ref(enum page_owner owner, enum revpt_ref_type *ref)
+{
+	switch (owner) {
+	case OWN_HOST:
+		*ref = REVPT_REF_HOST_CPU;
+		return 0;
+	case OWN_HYP:
+		*ref = REVPT_REF_HYP_CPU;
+		return 0;
+	case OWN_ENCLAVE:
+		*ref = REVPT_REF_ENCLAVE_CPU;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int revpt_owner_to_cpu_access(enum page_owner owner, u8 *access)
+{
+	switch (owner) {
+	case OWN_HOST:
+		*access = ACC_HOST_CPU;
+		return 0;
+	case OWN_HYP:
+		*access = ACC_HYP_CPU;
+		return 0;
+	case OWN_ENCLAVE:
+		*access = ACC_ENCLAVE_CPU;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static u16 revpt_snapshot_cpu_ref(const struct pfn_info *info, enum revpt_ref_type type)
+{
+	switch (type) {
+	case REVPT_REF_HOST_CPU:
+		return info->host_refs;
+	case REVPT_REF_ENCLAVE_CPU:
+		return info->enclave_refs;
+	case REVPT_REF_HYP_CPU:
+		return info->hyp_refs;
+	default:
+		return 0;
+	}
+}
+
+static int revpt_ref_update_phys_locked(phys_addr_t phys_start, u64 size,
+					enum revpt_ref_type ref_type, bool inc)
+{
+	u64 clip_pfn, clip_pages, i;
+	int active = revpt_clip_phys_range(phys_start, size, &clip_pfn, &clip_pages);
+
+	if (active <= 0)
+		return 0;
+
+	for (i = 0; i < clip_pages; i++) {
+		u64 pfn = clip_pfn + i;
+
+		(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
+		if (inc)
+			(void)revpt_ref_inc(pfn, ref_type);
+		else
+			(void)revpt_ref_dec(pfn, ref_type);
+	}
+
+	return 0;
+}
+
+int revpt_apply_share_locked(phys_addr_t phys_start, u64 nr_pages,
+			     enum page_owner owner_comp,
+			     enum page_owner borrower_comp)
+{
+	u64 clip_pfn, clip_pages, i;
+	u8 borrower_access;
+	enum revpt_ref_type borrower_ref;
+	int active;
+
+	if (revpt_owner_to_cpu_access(borrower_comp, &borrower_access))
+		return -EINVAL;
+	if (revpt_owner_to_cpu_ref(borrower_comp, &borrower_ref))
+		return -EINVAL;
+	if (owner_comp == OWN_FREE)
+		return -EINVAL;
+
+	active = revpt_clip_phys_range(phys_start, nr_pages << PAGE_SHIFT,
+				       &clip_pfn, &clip_pages);
+	if (active <= 0)
+		return 0;
+
+	for (i = 0; i < clip_pages; i++) {
+		u64 pfn = clip_pfn + i;
+
+		(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
+		(void)revpt_grant_access(pfn, borrower_access);
+		(void)revpt_ref_inc(pfn, borrower_ref);
+	}
+
+	return 0;
+}
+
+int revpt_apply_unshare_locked(phys_addr_t phys_start, u64 nr_pages,
+			       enum page_owner owner_comp,
+			       enum page_owner borrower_comp)
+{
+	u64 clip_pfn, clip_pages, i;
+	u8 borrower_access;
+	enum revpt_ref_type borrower_ref;
+	int active;
+
+	if (revpt_owner_to_cpu_access(borrower_comp, &borrower_access))
+		return -EINVAL;
+	if (revpt_owner_to_cpu_ref(borrower_comp, &borrower_ref))
+		return -EINVAL;
+	if (owner_comp == OWN_FREE)
+		return -EINVAL;
+
+	active = revpt_clip_phys_range(phys_start, nr_pages << PAGE_SHIFT,
+				       &clip_pfn, &clip_pages);
+	if (active <= 0)
+		return 0;
+
+	for (i = 0; i < clip_pages; i++) {
+		u64 pfn = clip_pfn + i;
+		struct pfn_info info;
+
+		(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
+		(void)revpt_ref_dec(pfn, borrower_ref);
+		if (revpt_snapshot_pfn(pfn, &info))
+			continue;
+		if (!revpt_snapshot_cpu_ref(&info, borrower_ref))
+			(void)revpt_revoke_access(pfn, borrower_access);
+	}
+
+	return 0;
+}
+
+int revpt_apply_donate_locked(phys_addr_t phys_start, u64 nr_pages,
+			      enum page_owner from_comp,
+			      enum page_owner to_comp)
+{
+	u64 clip_pfn, clip_pages, i;
+	enum revpt_ref_type from_ref, to_ref;
+	int active;
+
+	if (revpt_owner_to_cpu_ref(from_comp, &from_ref))
+		return -EINVAL;
+	if (revpt_owner_to_cpu_ref(to_comp, &to_ref))
+		return -EINVAL;
+
+	active = revpt_clip_phys_range(phys_start, nr_pages << PAGE_SHIFT,
+				       &clip_pfn, &clip_pages);
+	if (active <= 0)
+		return 0;
+
+	for (i = 0; i < clip_pages; i++) {
+		u64 pfn = clip_pfn + i;
+
+		(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
+		(void)revpt_ref_dec(pfn, from_ref);
+		(void)revpt_set_owner(pfn, to_comp);
+		(void)revpt_ref_inc(pfn, to_ref);
+	}
+
+	return 0;
+}
+
+int revpt_apply_host_cpu_map_locked(phys_addr_t phys_start, u64 size)
+{
+	return revpt_ref_update_phys_locked(phys_start, size, REVPT_REF_HOST_CPU, true);
+}
+
+int revpt_apply_host_cpu_unmap_locked(phys_addr_t phys_start, u64 size)
+{
+	return revpt_ref_update_phys_locked(phys_start, size, REVPT_REF_HOST_CPU, false);
+}
+
+int revpt_apply_hyp_cpu_map_locked(phys_addr_t phys_start, u64 size)
+{
+	return revpt_ref_update_phys_locked(phys_start, size, REVPT_REF_HYP_CPU, true);
+}
+
+int revpt_apply_hyp_cpu_unmap_locked(phys_addr_t phys_start, u64 size)
+{
+	return revpt_ref_update_phys_locked(phys_start, size, REVPT_REF_HYP_CPU, false);
+}
+
+int revpt_apply_host_dma_map_locked(phys_addr_t phys_start, u64 size)
+{
+	return revpt_ref_update_phys_locked(phys_start, size, REVPT_REF_HOST_DMA, true);
+}
+
+int revpt_apply_host_dma_unmap_locked(phys_addr_t phys_start, u64 size)
+{
+	return revpt_ref_update_phys_locked(phys_start, size, REVPT_REF_HOST_DMA, false);
+}
