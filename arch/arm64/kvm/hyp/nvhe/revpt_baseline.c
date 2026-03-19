@@ -402,6 +402,7 @@ static int revpt_ref_update_phys_locked(phys_addr_t phys_start, u64 size,
 {
 	u64 clip_pfn, clip_pages, i;
 	int active = revpt_clip_phys_range(phys_start, size, &clip_pfn, &clip_pages);
+	int ret;
 
 	if (active <= 0)
 		return 0;
@@ -409,11 +410,15 @@ static int revpt_ref_update_phys_locked(phys_addr_t phys_start, u64 size,
 	for (i = 0; i < clip_pages; i++) {
 		u64 pfn = clip_pfn + i;
 
-		(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
+		ret = revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
+		if (ret)
+			return ret;
 		if (inc)
-			(void)revpt_ref_inc(pfn, ref_type);
+			ret = revpt_ref_inc(pfn, ref_type);
 		else
-			(void)revpt_ref_dec(pfn, ref_type);
+			ret = revpt_ref_dec(pfn, ref_type);
+		if (ret)
+			return ret;
 	}
 
 	return 0;
@@ -427,6 +432,7 @@ int revpt_apply_share_locked(phys_addr_t phys_start, u64 nr_pages,
 	u8 borrower_access;
 	enum revpt_ref_type borrower_ref;
 	int active;
+	int ret;
 
 	if (revpt_owner_to_cpu_access(borrower_comp, &borrower_access))
 		return -EINVAL;
@@ -443,9 +449,15 @@ int revpt_apply_share_locked(phys_addr_t phys_start, u64 nr_pages,
 	for (i = 0; i < clip_pages; i++) {
 		u64 pfn = clip_pfn + i;
 
-		(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
-		(void)revpt_grant_access(pfn, borrower_access);
-		(void)revpt_ref_inc(pfn, borrower_ref);
+		ret = revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
+		if (ret)
+			return ret;
+		ret = revpt_grant_access(pfn, borrower_access);
+		if (ret)
+			return ret;
+		ret = revpt_ref_inc(pfn, borrower_ref);
+		if (ret)
+			return ret;
 	}
 
 	return 0;
@@ -459,6 +471,7 @@ int revpt_apply_unshare_locked(phys_addr_t phys_start, u64 nr_pages,
 	u8 borrower_access;
 	enum revpt_ref_type borrower_ref;
 	int active;
+	int ret;
 
 	if (revpt_owner_to_cpu_access(borrower_comp, &borrower_access))
 		return -EINVAL;
@@ -476,12 +489,20 @@ int revpt_apply_unshare_locked(phys_addr_t phys_start, u64 nr_pages,
 		u64 pfn = clip_pfn + i;
 		struct pfn_info info;
 
-		(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
-		(void)revpt_ref_dec(pfn, borrower_ref);
-		if (revpt_snapshot_pfn(pfn, &info))
-			continue;
-		if (!revpt_snapshot_cpu_ref(&info, borrower_ref))
-			(void)revpt_revoke_access(pfn, borrower_access);
+		ret = revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
+		if (ret)
+			return ret;
+		ret = revpt_ref_dec(pfn, borrower_ref);
+		if (ret)
+			return ret;
+		ret = revpt_snapshot_pfn(pfn, &info);
+		if (ret)
+			return ret;
+		if (!revpt_snapshot_cpu_ref(&info, borrower_ref)) {
+			ret = revpt_revoke_access(pfn, borrower_access);
+			if (ret)
+				return ret;
+		}
 	}
 
 	return 0;
@@ -494,6 +515,7 @@ int revpt_apply_donate_locked(phys_addr_t phys_start, u64 nr_pages,
 	u64 clip_pfn, clip_pages, i;
 	enum revpt_ref_type from_ref, to_ref;
 	int active;
+	int ret;
 
 	if (revpt_owner_to_cpu_ref(from_comp, &from_ref))
 		return -EINVAL;
@@ -508,10 +530,18 @@ int revpt_apply_donate_locked(phys_addr_t phys_start, u64 nr_pages,
 	for (i = 0; i < clip_pages; i++) {
 		u64 pfn = clip_pfn + i;
 
-		(void)revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
-		(void)revpt_ref_dec(pfn, from_ref);
-		(void)revpt_set_owner(pfn, to_comp);
-		(void)revpt_ref_inc(pfn, to_ref);
+		ret = revpt_set_flags(pfn, PFN_F_TRACKED | PFN_F_RAM, 0);
+		if (ret)
+			return ret;
+		ret = revpt_ref_dec(pfn, from_ref);
+		if (ret)
+			return ret;
+		ret = revpt_set_owner(pfn, to_comp);
+		if (ret)
+			return ret;
+		ret = revpt_ref_inc(pfn, to_ref);
+		if (ret)
+			return ret;
 	}
 
 	return 0;

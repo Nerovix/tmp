@@ -384,7 +384,11 @@ int host_stage2_unmap_dev_locked(phys_addr_t start, u64 size)
 		return ret;
 
 	pkvm_iommu_host_stage2_idmap(start, start + size, 0);
-	(void)revpt_apply_host_cpu_unmap_locked(start, size);
+	ret = revpt_apply_host_cpu_unmap_locked(start, size);
+	if (ret) {
+		revpt_test_cfg.snapshot_valid = false;
+		return ret;
+	}
 	revpt_check_phys_range_locked(start, size);
 	return 0;
 }
@@ -629,7 +633,11 @@ static int host_stage2_idmap(u64 addr)
 	if (ret)
 		return ret;
 
-	(void)revpt_apply_host_cpu_map_locked(range.start, range.end - range.start);
+	ret = revpt_apply_host_cpu_map_locked(range.start, range.end - range.start);
+	if (ret) {
+		revpt_test_cfg.snapshot_valid = false;
+		return ret;
+	}
 	revpt_check_phys_range_locked(range.start, range.end - range.start);
 	return 0;
 }
@@ -1522,7 +1530,11 @@ static int do_share(struct pkvm_mem_share *share)
 	if (ret)
 		return ret;
 
-	(void)revpt_apply_share_locked(phys_start, tx->nr_pages, owner, borrower);
+	ret = revpt_apply_share_locked(phys_start, tx->nr_pages, owner, borrower);
+	if (ret) {
+		revpt_test_cfg.snapshot_valid = false;
+		return ret;
+	}
 	revpt_check_phys_range_locked(phys_start, size);
 	return 0;
 }
@@ -1651,7 +1663,11 @@ static int do_unshare(struct pkvm_mem_share *share)
 	if (ret)
 		return ret;
 
-	(void)revpt_apply_unshare_locked(phys_start, tx->nr_pages, owner, borrower);
+	ret = revpt_apply_unshare_locked(phys_start, tx->nr_pages, owner, borrower);
+	if (ret) {
+		revpt_test_cfg.snapshot_valid = false;
+		return ret;
+	}
 	revpt_check_phys_range_locked(phys_start, size);
 	return 0;
 }
@@ -1766,7 +1782,11 @@ static int do_donate(struct pkvm_mem_donation *donation)
 	if (ret)
 		return ret;
 
-	(void)revpt_apply_donate_locked(phys_start, tx->nr_pages, from_owner, to_owner);
+	ret = revpt_apply_donate_locked(phys_start, tx->nr_pages, from_owner, to_owner);
+	if (ret) {
+		revpt_test_cfg.snapshot_valid = false;
+		return ret;
+	}
 	revpt_check_phys_range_locked(phys_start, size);
 	return 0;
 }
