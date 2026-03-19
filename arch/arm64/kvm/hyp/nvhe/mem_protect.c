@@ -21,6 +21,7 @@
 #include <nvhe/mem_protect.h>
 #include <nvhe/mm.h>
 #include <nvhe/pkvm.h>
+#include <nvhe/revpt_baseline.h>
 
 #define KVM_HOST_S2_FLAGS (KVM_PGTABLE_S2_NOFWB | KVM_PGTABLE_S2_IDMAP)
 
@@ -110,6 +111,8 @@ static void host_s2_put_page(void *addr)
 {
 	hyp_put_page(&host_s2_pool, addr);
 }
+
+static void revpt_check_phys_range_locked(phys_addr_t phys_start, u64 size);
 
 static int prepare_s2_pool(void *pgt_pool_base)
 {
@@ -381,6 +384,8 @@ int host_stage2_unmap_dev_locked(phys_addr_t start, u64 size)
 		return ret;
 
 	pkvm_iommu_host_stage2_idmap(start, start + size, 0);
+	(void)revpt_apply_host_cpu_unmap_locked(start, size);
+	revpt_check_phys_range_locked(start, size);
 	return 0;
 }
 
@@ -620,7 +625,13 @@ static int host_stage2_idmap(u64 addr)
 	if (ret)
 		return ret;
 
-	return host_stage2_idmap_locked(range.start, range.end - range.start, prot, false);
+	ret = host_stage2_idmap_locked(range.start, range.end - range.start, prot, false);
+	if (ret)
+		return ret;
+
+	(void)revpt_apply_host_cpu_map_locked(range.start, range.end - range.start);
+	revpt_check_phys_range_locked(range.start, range.end - range.start);
+	return 0;
 }
 
 static bool is_dabt(u64 esr)
@@ -757,6 +768,61 @@ struct pkvm_mem_share {
 struct pkvm_mem_donation {
 	const struct pkvm_mem_transition	tx;
 };
+
+static int revpt_component_to_owner(enum pkvm_component_id id,
+				    enum page_owner *owner)
+{
+	switch (id) {
+	case PKVM_ID_HOST:
+		*owner = OWN_HOST;
+		return 0;
+	case PKVM_ID_HYP:
+		*owner = OWN_HYP;
+		return 0;
+	case PKVM_ID_GUEST:
+		*owner = OWN_ENCLAVE;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
+static int revpt_tx_phys_range_locked(const struct pkvm_mem_transition *tx,
+				      phys_addr_t *phys_start, u64 *size)
+{
+	*size = tx->nr_pages << PAGE_SHIFT;
+
+	switch (tx->initiator.id) {
+	case PKVM_ID_HOST:
+		*phys_start = tx->initiator.addr;
+		return 0;
+	case PKVM_ID_HYP:
+		*phys_start = __hyp_pa((void *)tx->initiator.addr);
+		return 0;
+	case PKVM_ID_GUEST: {
+		struct kvm_shadow_vm *vm = tx->initiator.guest.vcpu->arch.pkvm.shadow_vm;
+		kvm_pte_t pte;
+		int ret;
+
+		ret = kvm_pgtable_get_leaf(&vm->pgt, tx->initiator.addr, &pte, NULL);
+		if (ret)
+			return ret;
+
+		*phys_start = kvm_pte_to_phys(pte);
+		return 0;
+	}
+	default:
+		return -EINVAL;
+	}
+}
+
+static void revpt_check_phys_range_locked(phys_addr_t phys_start, u64 size)
+{
+	u64 clip_pfn, clip_pages;
+
+	if (revpt_pa_overlap_enabled(phys_start, size, &clip_pfn, &clip_pages))
+		(void)revpt_check_range(clip_pfn, clip_pages);
+}
 
 static pkvm_id initiator_owner_id(const struct pkvm_mem_transition *tx)
 {
@@ -1432,13 +1498,33 @@ static int __do_share(struct pkvm_mem_share *share)
  //pt-mdf-checked
 static int do_share(struct pkvm_mem_share *share)
 {
+	const struct pkvm_mem_transition *tx = &share->tx;
+	enum page_owner owner, borrower;
+	phys_addr_t phys_start;
+	u64 size;
 	int ret;
 
 	ret = check_share(share);
 	if (ret)
 		return ret;
 
-	return WARN_ON(__do_share(share));
+	ret = WARN_ON(__do_share(share));
+	if (ret || tx->completer.id == PKVM_ID_FFA)
+		return ret;
+
+	ret = revpt_component_to_owner(tx->initiator.id, &owner);
+	if (ret)
+		return ret;
+	ret = revpt_component_to_owner(tx->completer.id, &borrower);
+	if (ret)
+		return ret;
+	ret = revpt_tx_phys_range_locked(tx, &phys_start, &size);
+	if (ret)
+		return ret;
+
+	(void)revpt_apply_share_locked(phys_start, tx->nr_pages, owner, borrower);
+	revpt_check_phys_range_locked(phys_start, size);
+	return 0;
 }
 
 static int check_unshare(struct pkvm_mem_share *share)
@@ -1541,13 +1627,33 @@ static int __do_unshare(struct pkvm_mem_share *share)
 // pt-mdf-checked
 static int do_unshare(struct pkvm_mem_share *share)
 {
+	const struct pkvm_mem_transition *tx = &share->tx;
+	enum page_owner owner, borrower;
+	phys_addr_t phys_start;
+	u64 size;
 	int ret;
 
 	ret = check_unshare(share);
 	if (ret)
 		return ret;
 
-	return WARN_ON(__do_unshare(share));
+	ret = WARN_ON(__do_unshare(share));
+	if (ret || tx->completer.id == PKVM_ID_FFA)
+		return ret;
+
+	ret = revpt_component_to_owner(tx->initiator.id, &owner);
+	if (ret)
+		return ret;
+	ret = revpt_component_to_owner(tx->completer.id, &borrower);
+	if (ret)
+		return ret;
+	ret = revpt_tx_phys_range_locked(tx, &phys_start, &size);
+	if (ret)
+		return ret;
+
+	(void)revpt_apply_unshare_locked(phys_start, tx->nr_pages, owner, borrower);
+	revpt_check_phys_range_locked(phys_start, size);
+	return 0;
 }
 
 static int check_donation(struct pkvm_mem_donation *donation)
@@ -1636,13 +1742,33 @@ static int __do_donate(struct pkvm_mem_donation *donation)
  //pt-mdf-checked
 static int do_donate(struct pkvm_mem_donation *donation)
 {
+	const struct pkvm_mem_transition *tx = &donation->tx;
+	enum page_owner from_owner, to_owner;
+	phys_addr_t phys_start;
+	u64 size;
 	int ret;
 
 	ret = check_donation(donation);
 	if (ret)
 		return ret;
 
-	return WARN_ON(__do_donate(donation));
+	ret = WARN_ON(__do_donate(donation));
+	if (ret)
+		return ret;
+
+	ret = revpt_component_to_owner(tx->initiator.id, &from_owner);
+	if (ret)
+		return ret;
+	ret = revpt_component_to_owner(tx->completer.id, &to_owner);
+	if (ret)
+		return ret;
+	ret = revpt_tx_phys_range_locked(tx, &phys_start, &size);
+	if (ret)
+		return ret;
+
+	(void)revpt_apply_donate_locked(phys_start, tx->nr_pages, from_owner, to_owner);
+	revpt_check_phys_range_locked(phys_start, size);
+	return 0;
 }
 
 

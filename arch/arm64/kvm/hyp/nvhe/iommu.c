@@ -545,6 +545,21 @@ int __pkvm_iommu_detach_dev(unsigned int iommu_id, unsigned int domain_id)
 
 // pt-checked
 // 确定一个已明确的事实：domain_id在这棵树里就是io页表的唯一标识符。
+static size_t __pkvm_iommu_unmap_locked_once(unsigned int domain_id,
+					     unsigned long iova, size_t size)
+{
+	struct pkvm_iommu *dev;
+	size_t ret = 0;
+
+	list_for_each_entry (dev, &iommu_list, list) {
+		ret = dev->ops->unmap ? dev->ops->unmap(domain_id, iova, size) : 0;
+		if (ret)
+			return ret;
+	}
+
+	return ret;
+}
+
 int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
 		     phys_addr_t paddr, size_t size, int prot)
 {
@@ -561,24 +576,66 @@ int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
 			return ret;
 	}
 
+	if (domain_id == revpt_test_cfg.host_dma_domain) {
+		(void)revpt_apply_host_dma_map_locked(paddr, size);
+		if (revpt_test_cfg.configured && revpt_test_cfg.snapshot_valid) {
+			u64 clip_pfn, clip_pages;
+
+			if (revpt_pa_overlap_enabled(paddr, size, &clip_pfn, &clip_pages))
+				(void)revpt_check_range(clip_pfn, clip_pages);
+		}
+	}
+
 	return ret;
 }
 
 size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
 		  size_t size)
 {
-	struct pkvm_iommu *dev;
 	size_t ret;
 
 	assert_host_component_locked();
 
-	list_for_each_entry (dev, &iommu_list, list) {
-		ret = dev->ops->unmap ? dev->ops->unmap(domain_id, iova, size) :
-					0;
-		if (ret)
-			return ret;
+	if (domain_id == revpt_test_cfg.host_dma_domain &&
+	    revpt_test_cfg.configured && revpt_test_cfg.snapshot_valid) {
+		size_t offset;
+		u64 min_clip = 0, max_clip = 0;
+		bool have_overlap = false;
+
+		for (offset = 0; offset < size; offset += PAGE_SIZE) {
+			phys_addr_t pa = __pkvm_iommu_iova_to_phys(domain_id, iova + offset);
+			u64 clip_pfn, clip_pages;
+
+			if (!pa)
+				continue;
+
+			ret = __pkvm_iommu_unmap_locked_once(domain_id, iova + offset,
+							     PAGE_SIZE);
+			if (ret != PAGE_SIZE)
+				return ret;
+
+			(void)revpt_apply_host_dma_unmap_locked(pa, PAGE_SIZE);
+
+			if (!revpt_pa_overlap_enabled(pa, PAGE_SIZE, &clip_pfn, &clip_pages))
+				continue;
+
+			if (!have_overlap) {
+				min_clip = clip_pfn;
+				max_clip = clip_pfn + clip_pages;
+				have_overlap = true;
+				continue;
+			}
+
+			min_clip = min(min_clip, clip_pfn);
+			max_clip = max(max_clip, clip_pfn + clip_pages);
+		}
+
+		if (have_overlap)
+			(void)revpt_check_range(min_clip, max_clip - min_clip);
+		return size;
 	}
 
+	ret = __pkvm_iommu_unmap_locked_once(domain_id, iova, size);
 	return ret;
 }
 
