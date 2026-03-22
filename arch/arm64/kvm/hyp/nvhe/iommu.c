@@ -602,6 +602,7 @@ size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
 	};
 	struct revpt_check_run runs[128];
 	bool do_revpt;
+	size_t unmapped = 0;
 	size_t ret;
 
 	assert_host_component_locked();
@@ -651,16 +652,19 @@ size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
 		for (offset = 0; offset < size; offset += PAGE_SIZE) {
 			phys_addr_t pa = __pkvm_iommu_iova_to_phys(domain_id, iova + offset);
 			int apply_ret;
-
-			if (!pa)
-				continue;
+			u64 clip_pfn, clip_pages;
 
 			ret = __pkvm_iommu_unmap_locked_once(domain_id, iova + offset,
 							     PAGE_SIZE);
+			unmapped += ret;
 			if (ret != PAGE_SIZE)
-				return ret;
+				return unmapped;
 
 			if (!revpt_ok)
+				continue;
+			if (!pa)
+				continue;
+			if (!revpt_pa_overlap_enabled(pa, PAGE_SIZE, &clip_pfn, &clip_pages))
 				continue;
 
 			apply_ret = revpt_apply_host_dma_unmap_locked(pa, PAGE_SIZE);
@@ -674,7 +678,7 @@ size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
 			for (offset = 0; offset < nr_runs; offset++)
 				(void)revpt_check_range(runs[offset].start_pfn, runs[offset].nr_pages);
 		}
-		return size;
+		return unmapped;
 	}
 
 	ret = __pkvm_iommu_unmap_locked_once(domain_id, iova, size);
