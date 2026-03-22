@@ -16,6 +16,12 @@ struct revpt_test_cfg {
 
 extern struct revpt_test_cfg revpt_test_cfg;
 
+static inline void revpt_invalidate_locked(void)
+{
+	if (revpt_test_cfg.configured)
+		revpt_test_cfg.snapshot_valid = false;
+}
+
 bool revpt_pa_overlap_enabled(phys_addr_t pa, u64 size,
 			      u64 *clip_pfn, u64 *clip_pages);
 

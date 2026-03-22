@@ -579,8 +579,8 @@ int __pkvm_iommu_map(unsigned int domain_id, unsigned long iova,
 	if (domain_id == revpt_test_cfg.host_dma_domain) {
 		ret = revpt_apply_host_dma_map_locked(paddr, size);
 		if (ret) {
-			revpt_test_cfg.snapshot_valid = false;
-			return ret;
+			revpt_invalidate_locked();
+			return 0;
 		}
 		if (revpt_test_cfg.configured && revpt_test_cfg.snapshot_valid) {
 			u64 clip_pfn, clip_pages;
@@ -601,20 +601,25 @@ size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
 		u64 nr_pages;
 	};
 	struct revpt_check_run runs[128];
+	bool do_revpt;
 	size_t ret;
 
 	assert_host_component_locked();
 
-	if (domain_id == revpt_test_cfg.host_dma_domain &&
-	    revpt_test_cfg.configured && revpt_test_cfg.snapshot_valid) {
+	do_revpt = domain_id == revpt_test_cfg.host_dma_domain &&
+		   revpt_test_cfg.configured && revpt_test_cfg.snapshot_valid;
+	if (do_revpt) {
 		size_t offset;
 		int nr_runs = 0;
+		bool revpt_ok = true;
 
 		for (offset = 0; offset < size; offset += PAGE_SIZE) {
 			phys_addr_t pa = __pkvm_iommu_iova_to_phys(domain_id, iova + offset);
 			u64 clip_pfn, clip_pages;
 			struct revpt_check_run *last;
 
+			if (!revpt_ok)
+				continue;
 			if (!pa)
 				continue;
 			if (!revpt_pa_overlap_enabled(pa, PAGE_SIZE, &clip_pfn, &clip_pages))
@@ -634,8 +639,9 @@ size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
 			}
 
 			if (nr_runs >= ARRAY_SIZE(runs)) {
-				revpt_test_cfg.snapshot_valid = false;
-				return 0;
+				revpt_invalidate_locked();
+				revpt_ok = false;
+				continue;
 			}
 			runs[nr_runs].start_pfn = clip_pfn;
 			runs[nr_runs].nr_pages = clip_pages;
@@ -654,15 +660,20 @@ size_t __pkvm_iommu_unmap(unsigned int domain_id, unsigned long iova,
 			if (ret != PAGE_SIZE)
 				return ret;
 
+			if (!revpt_ok)
+				continue;
+
 			apply_ret = revpt_apply_host_dma_unmap_locked(pa, PAGE_SIZE);
 			if (apply_ret) {
-				revpt_test_cfg.snapshot_valid = false;
-				return 0;
+				revpt_invalidate_locked();
+				revpt_ok = false;
 			}
 		}
 
-		for (offset = 0; offset < nr_runs; offset++)
-			(void)revpt_check_range(runs[offset].start_pfn, runs[offset].nr_pages);
+		if (revpt_ok) {
+			for (offset = 0; offset < nr_runs; offset++)
+				(void)revpt_check_range(runs[offset].start_pfn, runs[offset].nr_pages);
+		}
 		return size;
 	}
 
